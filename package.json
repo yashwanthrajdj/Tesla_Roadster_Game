@@ -1,7 +1,8 @@
 {
   "name": "roadster-thrust-lab",
   "version": "1.0.0",
-  "private": true,
+  "license": "Apache-2.0",
+  "author": "Yashwanthraj DJ <yashwanthrajdj33@gmail.com>",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",

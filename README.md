@@ -85,3 +85,8 @@ Sources consulted during planning:
 ## Asset note
 
 The requested parent directory `/media/yashwanth` is root-owned and grants the current user read/execute access but not write access. The working project was therefore created at `/media/yashwanth/Data/Tesla Game`, which is writable on the mounted drive. Grant write permission to the parent or move this folder if the exact shorter path is required.
+
+## License
+
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+
