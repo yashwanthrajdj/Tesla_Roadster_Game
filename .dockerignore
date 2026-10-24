@@ -1,0 +1,12 @@
+node_modules
+dist
+.git
+artifacts
+*.log
+*.webm
+*.png
+*.glb
+*.stl
+blender_ramp
+!public/models/*.glb
+!public/models/*.stl

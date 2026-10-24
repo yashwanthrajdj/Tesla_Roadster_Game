@@ -1,12 +1,10 @@
-@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap');
-
 :root {
   --ink: #f0f7ff;
   --muted: #8a9aab;
   --subtle: #566677;
-  --cyan: #63e4ff;
-  --cyan-deep: #1c9fc4;
-  --pink: #ff4e82;
+  --cyan: #ecd9b1;
+  --cyan-deep: #ab9060;
+  --pink: #e27f62;
   --yellow: #f5c870;
   --panel: rgba(12, 19, 29, 0.68);
   --panel-strong: rgba(10, 17, 27, 0.88);
@@ -32,8 +30,8 @@ button { font: inherit; color: inherit; }
   border: 1px solid var(--line);
   background: linear-gradient(135deg, rgba(20, 32, 46, 0.72), var(--panel));
   box-shadow: 0 18px 50px var(--shadow), inset 0 1px rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(18px) saturate(1.25);
-  -webkit-backdrop-filter: blur(18px) saturate(1.25);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 .eyebrow, .panel-label, .controls-strip, .load-status, .topbar-center, .key-hint, .telemetry-grid span, .speed-sub, .axis-legend, .thrust-foot, .vector-readout, .hint-card span, .physics-note > span {
   font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
@@ -146,8 +144,8 @@ h1 em, h2 em { color: var(--cyan); font-style: normal; }
   border-radius: 18px;
   background: linear-gradient(135deg, rgba(20, 38, 52, .42), rgba(8, 17, 29, .28));
   box-shadow: 0 8px 30px rgba(0, 0, 0, .2), inset 0 1px rgba(255, 255, 255, .1);
-  backdrop-filter: blur(16px) saturate(1.45);
-  -webkit-backdrop-filter: blur(16px) saturate(1.45);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 .topbar { top: 18px; left: 18px; right: auto; width: 205px; height: 56px; padding: 0 15px; }
 .brand-lockup { min-width: 180px; gap: 9px; }
@@ -172,6 +170,11 @@ h1 em, h2 em { color: var(--cyan); font-style: normal; }
 .toast { top: 84px; padding: 8px 14px; border-radius: 999px; background: rgba(8, 22, 33, .62); font-size: 9px; }
 .help-panel, .pause-card { border-radius: 22px; }.help-panel { width: min(640px, calc(100vw - 40px)); padding: 28px 30px 24px; }.help-panel h2 { margin: 12px 0 18px; font-size: 42px; }.physics-note { margin-top: 18px; border-radius: 10px; }.launch-button { border-radius: 12px; }
 .pause-card { padding: 28px; }.pause-card h2 { font-size: 43px; }
+.quality-button { font: 700 8px/1 Arial, sans-serif; min-width: 38px; letter-spacing: .02em; }
+.touch-controls { display: none; }
+.icon-button.active { border-color: rgba(236, 217, 177, .6); background: rgba(236, 217, 177, .1); box-shadow: none; }
+.brand-symbol i { box-shadow: none; }
+.glass-panel, .topbar, .mission-chip { background: rgba(18, 19, 20, .77); }
 .game-shell[data-theme="day"] .glass-panel, .game-shell[data-theme="day"] .topbar, .game-shell[data-theme="day"] .mission-chip { background: linear-gradient(135deg, rgba(245, 254, 255, .48), rgba(217, 237, 243, .26)); }
 
 @media (max-width: 900px) {
@@ -187,4 +190,21 @@ h1 em, h2 em { color: var(--cyan); font-style: normal; }
   .car-picker { top: 106px; left: 10px; width: 174px; height: 30px; }.camera-picker { top: 142px; left: 10px; width: 174px; height: 30px; }
   .car-picker > span, .camera-picker > span { font-size: 7px; }.car-picker select, .camera-picker select { font-size: 8px; }
   .bottom-hud { bottom: 10px; left: 10px; right: 10px; grid-template-columns: 1fr 1.12fr; gap: 7px; width: auto; }.speed-card, .accel-card { height: 68px; min-height: 68px; padding: 9px 10px; border-radius: 15px; }.speed-card { gap: 8px; }.speed-value { min-width: 78px; }.speed-value strong { font-size: 31px; }.speed-value span { font-size: 7px; }.speed-meta .panel-label { font-size: 7px; }.speed-meta > strong { font-size: 11px; margin: 4px 0; }.accel-card { padding: 8px 10px; }.accel-card .panel-label { font-size: 7px; }.g-row { gap: 6px; margin-top: 6px; }.g-readout { min-width: 42px; }.g-readout strong { font-size: 22px; }.g-readout span { font-size: 8px; }.axis-legend { font-size: 6px; margin-top: 4px; }.chip-metrics { font-size: 7px; }.help-panel { padding: 24px 18px 18px; }.help-grid { grid-template-columns: 1fr; gap: 3px; }.help-panel h2 { font-size: 37px; }
+}
+
+/* Keep the extra lighting/quality controls clear of the centre readout. */
+@media (min-width: 621px) and (max-width: 1100px) {
+  .mission-chip { top: 82px; }
+}
+@media (max-width: 620px) {
+  .top-actions { top: 12px !important; right: 10px !important; max-width: calc(100vw - 200px); flex-wrap: wrap; justify-content: flex-end; }
+  .mission-chip { top: 118px; }
+  .car-picker { top: 160px; }
+  .camera-picker { top: 196px; }
+  .toast { top: 240px; }
+}
+@media (pointer: coarse) {
+  .touch-controls { position: absolute; bottom: 94px; left: 12px; right: 12px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
+  .touch-controls button { height: 40px; border: 1px solid #8e8471; border-radius: 10px; background: rgba(15, 16, 17, .8); color: #eee1c5; font: 700 10px Arial, sans-serif; touch-action: none; }
+  .touch-controls button:active { background: #60543c; }
 }

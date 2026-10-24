@@ -1,11 +1,15 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { batchScenery, pixelRatioFor, AdaptiveResolution } from './render-budget.js';
+import { createVehicleLights } from './vehicle-lights.js';
+import { createStreetLighting } from './street-lights.js';
+import { createPressureSmoke } from './pressure-smoke.js';
 import './style.css';
 
 const CAR_OPTIONS = {
+  '2020': { label: 'ROADSTER 2020', type: 'glb', url: '/models/tesla-roadster-2020-driving.glb' },
   '2026': { label: 'ROADSTER 2026', type: 'glb', url: '/models/tesla-roadster-2026.glb' },
-  '2020': { label: 'ROADSTER 2020', type: 'glb', url: '/models/tesla-roadster-2020.glb' },
   stl: { label: 'ROADSTER STL', type: 'stl', url: '/models/tesla-roadster.stl' },
 };
 const TAU = Math.PI * 2;
@@ -17,7 +21,7 @@ const ZERO = new THREE.Vector3();
 // Keep the visible course and its collision profile driven by the same values.
 // The highway is intentionally flat; its old ramp-only terrain branch was an
 // invisible obstacle because the matching mesh is not part of Road 01.
-const HIGHWAY_BOUNDS = Object.freeze({ halfWidth: 7.75, minZ: -4890, maxZ: 104 });
+const HIGHWAY_BOUNDS = Object.freeze({ halfWidth: 11.25, minZ: -4890, maxZ: 104 });
 const STUNT_BOUNDS = Object.freeze({ halfWidth: 72, minZ: -170, maxZ: 104 });
 const STUNT_RAMP = Object.freeze({
   startZ: -55,
@@ -39,6 +43,8 @@ const SUPPORT_EPSILON = 0.006;
 const PHYSICS_STEP = 1 / 120;
 const SINGLE_SPIN_DURATION = 0.48;
 const SINGLE_SPIN_RATE = TAU / SINGLE_SPIN_DURATION;
+const THRUSTER_RECHARGE_GROUND = 8;
+const THRUSTER_RECHARGE_AIR = 4;
 
 document.querySelector('#app').innerHTML = `
   <main class="game-shell" id="game-shell">
@@ -59,6 +65,8 @@ document.querySelector('#app').innerHTML = `
         <div class="topbar-center"><span class="status-dot"></span><span id="flight-status">SYSTEMS NOMINAL</span></div>
         <div class="top-actions">
           <button class="icon-button" id="sound-button" title="Toggle thruster audio" aria-label="Toggle thruster audio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h4l5 4V6l-5 4H4Z"/><path d="M17 9.5a4 4 0 0 1 0 5M19.5 7a7.5 7.5 0 0 1 0 10"/></svg></button>
+          <button class="icon-button active" id="headlights-button" title="Headlights on (L)" aria-label="Toggle headlights" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5c8 0 8 14 0 14V5ZM3 6h6M2 10h7M2 14h7M3 18h6"/></svg></button>
+          <button class="icon-button quality-button" id="quality-button" title="Rendering quality: Auto" aria-label="Change rendering quality">AUTO</button>
           <button class="icon-button" id="camera-button" title="Switch camera angle" aria-label="Switch camera angle"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h3l1.4-2h7.2l1.4 2H20v11H4v-11Z"/><circle cx="12" cy="13" r="3.2"/><path d="M12 2v3M12 19v3M2 13h3M19 13h3"/></svg></button>
           <button class="icon-button" id="camera-lock-button" title="Lock camera heading" aria-label="Lock camera heading"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg></button>
           <button class="icon-button" id="spiral-button" title="Toggle automatic spiral" aria-label="Toggle automatic spiral"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8.5a6.5 6.5 0 1 1 1 8.2"/><path d="m5 5 1 3.5L9.5 7"/><path d="M12 8v4l3 2"/></svg></button>
@@ -74,8 +82,8 @@ document.querySelector('#app').innerHTML = `
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 16.5 6.6 10h10.8l1.6 6.5"/><path d="M7 10 8.5 6h7L17 10M4 16.5h16v3H4z"/><circle cx="7.5" cy="19.5" r="1.5"/><circle cx="16.5" cy="19.5" r="1.5"/></svg>
         <span>CAR MODEL</span>
         <select id="car-select" aria-label="Select car model">
-          <option value="2026">ROADSTER 2026</option>
-          <option value="2020">ROADSTER 2020</option>
+           <option value="2020">ROADSTER 2020</option>
+           <option value="2026">ROADSTER 2026</option>
           <option value="stl">ROADSTER STL</option>
         </select>
       </label>
@@ -114,6 +122,16 @@ document.querySelector('#app').innerHTML = `
         </div>
       </section>
       <div class="toast" id="toast"></div>
+      <div class="touch-controls" aria-label="Touch driving controls">
+        <button data-drive-key="KeyA" aria-label="Steer left">◀</button>
+        <button data-drive-key="KeyW" aria-label="Drive forward">DRIVE</button>
+        <button data-drive-key="KeyD" aria-label="Steer right">▶</button>
+        <button data-drive-key="Space" aria-label="Lift thrusters">LIFT</button>
+        <button data-drive-key="KeyQ" aria-label="Spin left">Q ↶</button>
+        <button data-drive-key="KeyS" aria-label="Brake or reverse">BRAKE</button>
+        <button data-drive-key="KeyE" aria-label="Spin right">E ↷</button>
+        <button data-drive-key="ArrowUp" aria-label="Rear thrust">THRUST</button>
+      </div>
     </div>
 
     <div class="help-overlay" id="help-overlay" aria-hidden="true">
@@ -136,6 +154,7 @@ document.querySelector('#app').innerHTML = `
           <div><span class="keycap large">1</span><span class="keycap large">2</span><p><b>ENVIRONMENT</b><small>Road launch or Stunt Vector track mode.</small></p></div>
           <div><span class="keycap large">B</span><p><b>TRAFFIC CARS</b><small>Toggle the decorative traffic vehicles on or off.</small></p></div>
           <div><span class="keycap large">T</span><p><b>THEME SHIFT</b><small>Switch between daylight test range and night show mode.</small></p></div>
+          <div><span class="keycap large">L</span><p><b>HEADLIGHTS</b><small>Toggle the white front beams and red running lights. Brake lights remain active.</small></p></div>
           <div><span class="keycap large">R</span><p><b>RESET RUN</b><small>Return to the launch lane and restore the air reserve.</small></p></div>
         </div>
         <div class="physics-note"><span>PHYSICS NOTE</span><p>This is a cold-gas rigid-body simulation: thrust creates force and torque at nozzle positions. The car has gravity, drag, finite air, and a surface-seeking suction fan — never antigravity.</p></div>
@@ -155,7 +174,7 @@ const topActions = document.querySelector('.top-actions');
 document.querySelector('#hud').append(topActions);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x08101b);
+scene.background = new THREE.Color(0x010204);
 // Keep the test range readable in the side/ramp camera. The dark background
 // already supplies the night look; distance fog was hiding the ramp and road.
 scene.fog = null;
@@ -165,14 +184,18 @@ camera.position.set(0, 6, 62);
 const sideCamera = new THREE.OrthographicCamera(-72, 72, 42, -42, 0.1, 500);
 sideCamera.position.set(90, 21, -12);
 
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const qualityModes = ['auto', 'low', 'balanced', 'high'];
+const requestedQuality = new URLSearchParams(window.location.search).get('quality');
+let renderQuality = qualityModes.includes(requestedQuality) ? requestedQuality : 'auto';
+const adaptiveResolution = new AdaptiveResolution();
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'default' });
+renderer.setPixelRatio(pixelRatioFor(window.innerWidth, window.innerHeight, window.devicePixelRatio, renderQuality));
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.shadowMap.enabled = true;
+renderer.shadowMap.enabled = false;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.12;
+renderer.toneMappingExposure = 1.35;
 
 const world = new THREE.Group();
 scene.add(world);
@@ -185,22 +208,24 @@ environment.add(trackOneRoot, trackTwoRoot, trafficRoot);
 trackTwoRoot.visible = false;
 const vehicleRoot = new THREE.Group();
 world.add(vehicleRoot);
+const vehicleLights = createVehicleLights(vehicleRoot);
+const streetLighting = createStreetLighting(scene);
 const airReleaseRoot = new THREE.Group();
 world.add(airReleaseRoot);
 
-const hemiLight = new THREE.HemisphereLight(0x8ec7ff, 0x151821, 1.55);
+const hemiLight = new THREE.HemisphereLight(0x73777d, 0x050608, 1.1);
 scene.add(hemiLight);
 const sunLight = new THREE.DirectionalLight(0xffe7bd, 3.5);
 sunLight.position.set(-40, 80, 30);
-sunLight.castShadow = true;
-sunLight.shadow.mapSize.set(2048, 2048);
+sunLight.castShadow = false;
+sunLight.shadow.mapSize.set(512, 512);
 sunLight.shadow.camera.left = -80;
 sunLight.shadow.camera.right = 80;
 sunLight.shadow.camera.top = 100;
 sunLight.shadow.camera.bottom = -120;
 sunLight.shadow.bias = -0.0004;
 scene.add(sunLight);
-const rimLight = new THREE.DirectionalLight(0x4d7cff, 2.4);
+const rimLight = new THREE.DirectionalLight(0x969da8, 1.1);
 rimLight.position.set(55, 24, -110);
 scene.add(rimLight);
 
@@ -253,7 +278,7 @@ const loader = new GLTFLoader();
 const stlLoader = new STLLoader();
 let activeModel = null;
 let carLoadToken = 0;
-let activeCar = '2026';
+let activeCar = '2020';
 let vehicleSupportOffset = 0.72;
 const vehicleSupportCorners = [];
 const clock = new THREE.Clock();
@@ -270,6 +295,7 @@ const tmp = {
   cameraTarget: new THREE.Vector3(),
   cameraPosition: new THREE.Vector3(),
   desiredQuaternion: new THREE.Quaternion(),
+  steerDelta: new THREE.Quaternion(),
   surfaceNormal: new THREE.Vector3(),
   surfaceTangent: new THREE.Vector3(),
   previousPosition: new THREE.Vector3(),
@@ -304,31 +330,31 @@ function addCylinder(parent, radius, height, position, material, options = {}) {
 }
 
 function createRoad(parent = trackOneRoot) {
-  const roadMat = createMaterial(0x171b22, { roughness: 0.9, metalness: 0.03 });
-  const shoulderMat = createMaterial(0x242a33, { roughness: 0.94 });
-  const lineMat = createMaterial(0xf4f2e7, { emissive: 0x726d5e, emissiveIntensity: 0.28, roughness: 0.55 });
-  const cyanMat = createMaterial(0x58dcff, { emissive: 0x1687c9, emissiveIntensity: 3.2, metalness: 0.4 });
-  const redMat = createMaterial(0xff465e, { emissive: 0xff183e, emissiveIntensity: 4.5 });
+  const roadMat = createMaterial(0x17191d, { roughness: 0.94, metalness: 0.03 });
+  const shoulderMat = createMaterial(0x292b2c, { roughness: 0.97 });
+  const laneMat = createMaterial(0xe7e3d7, { emissive: 0x5e5546, emissiveIntensity: 0.12, roughness: 0.55 });
+  const medianMat = createMaterial(0xd6a94f, { emissive: 0x7f4e16, emissiveIntensity: 0.35, roughness: 0.48 });
+  const edgeMat = createMaterial(0xf0ead9, { emissive: 0x5d5549, emissiveIntensity: 0.16, roughness: 0.5 });
 
-  addBox(parent, [18, 0.16, 5000], [0, -0.12, -2400], roadMat, { receiveShadow: true });
-  addBox(parent, [5, 0.08, 5000], [-11.5, -0.1, -2400], shoulderMat);
-  addBox(parent, [5, 0.08, 5000], [11.5, -0.1, -2400], shoulderMat);
+  // Road 01 is a proper four-lane highway: three dashed separators divide
+  // four six-metre lanes, with a warm double centre line and bright edge
+  // markings instead of the old neon-red/blue guide strips.
+  addBox(parent, [24, 0.16, 5000], [0, -0.12, -2400], roadMat, { receiveShadow: true });
+  addBox(parent, [5.5, 0.08, 5000], [-14.75, -0.1, -2400], shoulderMat);
+  addBox(parent, [5.5, 0.08, 5000], [14.75, -0.1, -2400], shoulderMat);
 
   for (let z = 108; z > -4900; z -= 12) {
-    addBox(parent, [0.18, 0.025, 5.2], [0, 0.01, z], lineMat, { castShadow: false, receiveShadow: false });
-    addBox(parent, [0.12, 0.035, 2.4], [-8.5, 0.015, z + 4], redMat, { castShadow: false, receiveShadow: false });
-    addBox(parent, [0.12, 0.035, 2.4], [8.5, 0.015, z + 4], redMat, { castShadow: false, receiveShadow: false });
+    for (const x of [-6, 6]) addBox(parent, [0.14, 0.025, 5.2], [x, 0.01, z], laneMat, { castShadow: false, receiveShadow: false });
+    addBox(parent, [0.12, 0.025, 5.2], [-0.23, 0.012, z], medianMat, { castShadow: false, receiveShadow: false });
+    addBox(parent, [0.12, 0.025, 5.2], [0.23, 0.012, z], medianMat, { castShadow: false, receiveShadow: false });
   }
-  for (const x of [-9.15, 9.15]) {
-    addBox(parent, [0.18, 0.22, 5000], [x, 0.06, -2400], cyanMat, { castShadow: false });
-    addBox(parent, [0.12, 0.12, 5000], [x * 1.08, 0.01, -2400], redMat, { castShadow: false });
-  }
-  addBox(parent, [90, 0.12, 5000], [0, -0.3, -2400], createMaterial(0x0e1219, { roughness: 1 }), { receiveShadow: true, castShadow: false });
+  for (const x of [-11.7, 11.7]) addBox(parent, [0.18, 0.035, 5000], [x, 0.02, -2400], edgeMat, { castShadow: false, receiveShadow: false });
+  addBox(parent, [90, 0.12, 5000], [0, -0.3, -2400], createMaterial(0x0b0c0e, { roughness: 1 }), { receiveShadow: true, castShadow: false });
 
-  const startPadMat = createMaterial(0x273445, { emissive: 0x071c2a, emissiveIntensity: 0.5, metalness: 0.45 });
-  addBox(parent, [18, 0.08, 38], [0, 0.02, 56], startPadMat, { castShadow: false });
+  const startPadMat = createMaterial(0x292d31, { emissive: 0x090b0d, emissiveIntensity: 0.32, metalness: 0.45 });
+  addBox(parent, [24, 0.08, 38], [0, 0.02, 56], startPadMat, { castShadow: false });
   for (let i = 0; i < 8; i += 1) {
-    addBox(parent, [0.12, 0.05, 1.8], [-7.8 + i * 2.2, 0.09, 56], i === 4 ? cyanMat : redMat, { castShadow: false });
+    addBox(parent, [0.12, 0.05, 1.8], [-9.1 + i * 2.6, 0.09, 56], i === 4 ? medianMat : edgeMat, { castShadow: false });
   }
 }
 
@@ -572,6 +598,7 @@ function createSingleRampLights(parent, red, cyan) {
       addCylinder(parent, 0.08, 6, [x, 3, z], pole, { segments: 8, castShadow: false });
       addBox(parent, [1.8, 0.12, 0.12], [x + (x > 0 ? -0.8 : 0.8), 6, z], pole, { castShadow: false });
       addBox(parent, [0.35, 0.13, 0.2], [x + (x > 0 ? -1.65 : 1.65), 5.95, z], x > 0 ? cyan : red, { castShadow: false, receiveShadow: false });
+      streetLighting.register(2, x + (x > 0 ? -1.65 : 1.65), 5.85, z);
     }
   }
 }
@@ -879,13 +906,21 @@ function getVehicleSupportOffset(surfaceNormal = UP) {
 }
 
 function createLightsAndScenery() {
-  const poleMat = createMaterial(0x273242, { metalness: 0.8, roughness: 0.26 });
-  const lampMat = createMaterial(0xb9f7ff, { emissive: 0x35b5e5, emissiveIntensity: 5 });
-  for (let z = 96; z > -225; z -= 25) {
-    for (const x of [-14, 14]) {
-      addCylinder(environment, 0.11, 8, [x, 4, z], poleMat, { segments: 8 });
-      addBox(environment, [3.5, 0.12, 0.12], [x + (x > 0 ? -1.6 : 1.6), 7.8, z], poleMat, { castShadow: false });
-      addBox(environment, [0.5, 0.12, 0.22], [x + (x > 0 ? -3.25 : 3.25), 7.75, z], lampMat, { castShadow: false, receiveShadow: false });
+  const poleMat = createMaterial(0x272727, { metalness: 0.82, roughness: 0.3 });
+  const lampMat = createMaterial(0xffd79b, { emissive: 0xff9d45, emissiveIntensity: 8, roughness: 0.32 });
+  const lampStartZ = 108;
+  const lampEndZ = HIGHWAY_BOUNDS.minZ - 32;
+  const lampSpacing = 32;
+  // Lamp fixtures cover the full road; only four nearby light sources are
+  // evaluated by the GPU, instead of 104 point lights on every fragment.
+  for (let z = lampStartZ; z > lampEndZ; z -= lampSpacing) {
+    for (const side of [-1, 1]) {
+      const poleX = side * 16.6;
+      const headX = poleX - side * 3.5;
+      addCylinder(trackOneRoot, 0.1, 8.8, [poleX, 4.4, z], poleMat, { segments: 10, castShadow: false });
+      addBox(trackOneRoot, [3.8, 0.13, 0.13], [poleX - side * 1.75, 8.7, z], poleMat, { castShadow: false });
+      addBox(trackOneRoot, [0.62, 0.15, 0.26], [headX, 8.62, z], lampMat, { castShadow: false, receiveShadow: false });
+      streetLighting.register(1, headX, 8.35, z);
     }
   }
   const starPositions = [];
@@ -923,16 +958,22 @@ function createTrafficCar(hex, position, rotation = 0, scale = 1) {
 const traffic = [];
 function createTraffic() {
   const colors = [0x89a7b9, 0xff554f, 0xe4b25c, 0x8e9aff, 0xc7d3d8, 0x4e7080];
-  for (let i = 0; i < 9; i += 1) {
-    const lane = i % 3 === 0 ? -4.2 : i % 3 === 1 ? 4.2 : 0;
+  const lanes = [-9, -3, 3, 9];
+  for (let i = 0; i < 12; i += 1) {
+    const laneIndex = i % lanes.length;
+    const lane = lanes[laneIndex];
     const car = createTrafficCar(colors[i % colors.length], [lane, 0, 22 - i * 29], i % 3 === 1 ? Math.PI : 0, 0.72 + (i % 2) * 0.12);
-    traffic.push({ object: car, speed: (i % 3 === 1 ? -1 : 1) * (7 + (i % 4) * 2), offset: 22 - i * 29 });
+    traffic.push({ object: car, speed: (laneIndex >= 2 ? -1 : 1) * (7 + (i % 4) * 2), offset: 22 - i * 29 });
   }
 }
 
 createRoad();
 createTrackTwo();
 createLightsAndScenery();
+batchScenery(trackOneRoot);
+batchScenery(trackTwoRoot);
+streetLighting.buildPools(1, trackOneRoot);
+streetLighting.buildPools(2, trackTwoRoot);
 createTraffic();
 trafficRoot.visible = trafficVisible;
 
@@ -962,12 +1003,12 @@ function createPlaceholderCar() {
 createPlaceholderCar();
 
 function createAnchoredCone(radius, length, segments = 14) {
-  const geometry = new THREE.ConeGeometry(radius, length, segments, 1, true);
+  const geometry = new THREE.CylinderGeometry(radius, radius * 0.14, length, segments, 1, true);
   geometry.translate(0, length * 0.5, 0);
   return geometry;
 }
 
-function createJet(position, exhaustDirection, tint = 0x42dfff, scale = 1, channel = 'rcs') {
+function createJet(position, exhaustDirection, tint = 0xf2f0e8, scale = 1, channel = 'rcs') {
   const group = new THREE.Group();
   group.position.set(...position);
   group.scale.setScalar(scale);
@@ -976,7 +1017,7 @@ function createJet(position, exhaustDirection, tint = 0x42dfff, scale = 1, chann
   aperture.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), exhaustDirection);
   aperture.renderOrder = 2;
   group.add(aperture);
-  const plumeMaterial = new THREE.MeshBasicMaterial({ color: tint, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: true });
+  const plumeMaterial = new THREE.MeshBasicMaterial({ color: 0xe9e9e4, transparent: true, opacity: 0, depthWrite: false, depthTest: true });
   const plume = new THREE.Mesh(createAnchoredCone(0.28, 1.7), plumeMaterial);
   plume.position.copy(exhaustDirection).multiplyScalar(0.02);
   plume.quaternion.setFromUnitVectors(UP, exhaustDirection);
@@ -992,93 +1033,20 @@ function createJet(position, exhaustDirection, tint = 0x42dfff, scale = 1, chann
   return { group, aperture, plume, core, direction: exhaustDirection.clone(), power: 0, channel, side: Math.sign(position[0]) || 0 };
 }
 
-for (const x of [-0.72, -0.24, 0.24, 0.72]) effects.rear.push(createJet([x, 0.22, 2.14], new THREE.Vector3(0, 0, 1), 0x4bdcff, 0.86, 'rear'));
-effects.lift.push(createJet([-0.58, -0.61, -0.1], new THREE.Vector3(0, -1, 0), 0x8a8dff, 0.84, 'lift'));
-effects.lift.push(createJet([0.58, -0.61, -0.1], new THREE.Vector3(0, -1, 0), 0x8a8dff, 0.84, 'lift'));
-effects.rcs.push(createJet([-0.98, 0.04, 0.7], new THREE.Vector3(-1, 0, 0), 0xff5a9b, 0.74, 'yaw'));
-effects.rcs.push(createJet([0.98, 0.04, 0.7], new THREE.Vector3(1, 0, 0), 0xff5a9b, 0.74, 'yaw'));
-effects.rcs.push(createJet([-0.98, 0.04, -0.7], new THREE.Vector3(-1, 0, 0), 0x6c8cff, 0.74, 'roll'));
-effects.rcs.push(createJet([0.98, 0.04, -0.7], new THREE.Vector3(1, 0, 0), 0x6c8cff, 0.74, 'roll'));
+for (const x of [-0.72, -0.24, 0.24, 0.72]) effects.rear.push(createJet([x, 0.22, 2.14], new THREE.Vector3(0, 0, 1), 0xffc979, 0.9, 'rear'));
+for (const x of [-0.68, 0.68]) {
+  for (const z of [-1.2, 1.2]) effects.lift.push(createJet([x, -0.58, z], new THREE.Vector3(0, -1, 0), 0xf2f0e8, 0.88, 'lift'));
+}
+effects.rcs.push(createJet([-0.98, 0.04, 0.7], new THREE.Vector3(-1, 0, 0), 0xffa45d, 0.78, 'yaw'));
+effects.rcs.push(createJet([0.98, 0.04, 0.7], new THREE.Vector3(1, 0, 0), 0xffa45d, 0.78, 'yaw'));
+effects.rcs.push(createJet([-0.98, 0.04, -0.7], new THREE.Vector3(-1, 0, 0), 0xffd08a, 0.78, 'roll'));
+effects.rcs.push(createJet([0.98, 0.04, -0.7], new THREE.Vector3(1, 0, 0), 0xffd08a, 0.78, 'roll'));
 
 const airReleasePools = [];
 const visualPressure = { rear: 0, lift: 0, rcs: 0 };
 
-function createAirReleasePool(name, tint, capacity = 32) {
-  const positions = new Float32Array(capacity * 3);
-  const colors = new Float32Array(capacity * 3);
-  const sizes = new Float32Array(capacity);
-  const alphas = new Float32Array(capacity);
-  const color = new THREE.Color(tint);
-  for (let i = 0; i < capacity; i += 1) {
-    colors[i * 3] = color.r;
-    colors[i * 3 + 1] = color.g;
-    colors[i * 3 + 2] = color.b;
-  }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  geometry.setAttribute('size', new THREE.Float32BufferAttribute(sizes, 1));
-  geometry.setAttribute('alpha', new THREE.Float32BufferAttribute(alphas, 1));
-  const material = new THREE.ShaderMaterial({
-    transparent: true,
-    depthWrite: false,
-    depthTest: true,
-    vertexColors: true,
-    blending: THREE.AdditiveBlending,
-    vertexShader: `
-      attribute float size;
-      attribute float alpha;
-      varying float vAlpha;
-      varying vec3 vColor;
-      void main() {
-        vAlpha = alpha;
-        vColor = color;
-        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = size * (980.0 / max(1.0, -mvPosition.z));
-        gl_Position = projectionMatrix * mvPosition;
-      }
-    `,
-    fragmentShader: `
-      varying float vAlpha;
-      varying vec3 vColor;
-      void main() {
-        float radius = distance(gl_PointCoord, vec2(0.5));
-        float softness = 1.0 - smoothstep(0.12, 0.5, radius);
-        if (softness < 0.01) discard;
-        gl_FragColor = vec4(vColor, vAlpha * softness);
-      }
-    `,
-  });
-  const points = new THREE.Points(geometry, material);
-  points.name = `${name}-high-pressure-air`;
-  points.frustumCulled = false;
-  points.renderOrder = 4;
-  airReleaseRoot.add(points);
-  const pool = {
-    name,
-    capacity,
-    points,
-    geometry,
-    positions,
-    sizes,
-    alphas,
-    particles: Array.from({ length: capacity }, (_, index) => ({
-      index,
-      active: false,
-      life: 0,
-      maxLife: 0,
-      size: 0,
-      alpha: 0,
-      seed: index * 1.731,
-      position: new THREE.Vector3(),
-      velocity: new THREE.Vector3(),
-    })),
-    nextIndex: 0,
-    spawnAccumulator: 0,
-    spawnPosition: new THREE.Vector3(),
-    spawnDirection: new THREE.Vector3(),
-    sideways: new THREE.Vector3(),
-  };
+function createAirReleasePool(name, capacity) {
+  const pool = createPressureSmoke(airReleaseRoot, name, capacity);
   airReleasePools.push(pool);
   return pool;
 }
@@ -1087,89 +1055,17 @@ function clearAirReleaseParticles() {
   visualPressure.rear = 0;
   visualPressure.lift = 0;
   visualPressure.rcs = 0;
-  airReleasePools.forEach((pool) => {
-    pool.nextIndex = 0;
-    pool.spawnAccumulator = 0;
-    pool.particles.forEach((particle) => {
-      particle.active = false;
-      particle.life = 0;
-      pool.sizes[particle.index] = 0;
-      pool.alphas[particle.index] = 0;
-    });
-    pool.geometry.attributes.size.needsUpdate = true;
-    pool.geometry.attributes.alpha.needsUpdate = true;
-  });
+  airReleasePools.forEach((pool) => pool.clear());
 }
 
-function spawnAirReleaseParticle(pool, jet, pressure, boost = false) {
-  if (pressure <= 0.02) return;
-  const particle = pool.particles[pool.nextIndex];
-  pool.nextIndex = (pool.nextIndex + 1) % pool.capacity;
-  particle.active = true;
-  particle.maxLife = 0.16 + Math.random() * 0.23 + pressure * 0.12;
-  particle.life = particle.maxLife;
-  particle.size = (1.4 + Math.random() * 1.4) * (boost ? 1.18 : 1);
-  particle.alpha = 0.22 + pressure * 0.3;
-  pool.spawnPosition.copy(jet.group.position).applyQuaternion(physics.quaternion).add(physics.position);
-  pool.spawnDirection.copy(jet.direction).applyQuaternion(physics.quaternion).normalize();
-  particle.position.copy(pool.spawnPosition).addScaledVector(pool.spawnDirection, 0.08 + pressure * 0.1);
-  particle.velocity.copy(physics.velocity).multiplyScalar(0.22);
-  particle.velocity.addScaledVector(pool.spawnDirection, 3.5 + pressure * (boost ? 14 : 9));
-  pool.sideways.crossVectors(pool.spawnDirection, UP);
-  if (pool.sideways.lengthSq() < 0.01) pool.sideways.set(1, 0, 0);
-  pool.sideways.normalize();
-  particle.velocity.addScaledVector(pool.sideways, (Math.random() - 0.5) * (0.8 + pressure * 1.8));
-  particle.velocity.y += (Math.random() - 0.5) * 0.7;
-  particle.seed = Math.random() * 100;
-  const offset = particle.index * 3;
-  pool.positions[offset] = particle.position.x;
-  pool.positions[offset + 1] = particle.position.y;
-  pool.positions[offset + 2] = particle.position.z;
-  pool.sizes[particle.index] = particle.size;
-  pool.alphas[particle.index] = particle.alpha;
+function smokeGroundHeight(x, z) {
+  if (activeTrack === 1) return z > 37 && z < 75 ? 0.06 : -0.04;
+  return Math.abs(x) < 10 && z > STUNT_RAMP.startZ && z < 95 ? STUNT_RAMP.surfaceY : -0.04;
 }
 
-function updateAirReleasePool(pool, dt) {
-  pool.particles.forEach((particle) => {
-    if (!particle.active) return;
-    particle.life -= dt;
-    const offset = particle.index * 3;
-    if (particle.life <= 0) {
-      particle.active = false;
-      pool.sizes[particle.index] = 0;
-      pool.alphas[particle.index] = 0;
-      return;
-    }
-    const age = 1 - particle.life / particle.maxLife;
-    particle.velocity.multiplyScalar(Math.exp(-1.65 * dt));
-    particle.velocity.x += Math.sin(clock.elapsedTime * 17 + particle.seed) * 0.45 * dt;
-    particle.velocity.y += Math.cos(clock.elapsedTime * 13 + particle.seed * 0.7) * 0.35 * dt;
-    particle.velocity.z += Math.sin(clock.elapsedTime * 11 + particle.seed * 1.3) * 0.45 * dt;
-    particle.position.addScaledVector(particle.velocity, dt);
-    pool.positions[offset] = particle.position.x;
-    pool.positions[offset + 1] = particle.position.y;
-    pool.positions[offset + 2] = particle.position.z;
-    pool.sizes[particle.index] = particle.size * (1 + age * 2.8);
-    pool.alphas[particle.index] = particle.alpha * (1 - age) * (1 - age * 0.25);
-  });
-  pool.geometry.attributes.position.needsUpdate = true;
-  pool.geometry.attributes.size.needsUpdate = true;
-  pool.geometry.attributes.alpha.needsUpdate = true;
-}
-
-const airRearPool = createAirReleasePool('rear', 0xbcefff, 36);
-const airLiftPool = createAirReleasePool('lift', 0xd1c9ff, 28);
-const airRcsPool = createAirReleasePool('rcs', 0xffa3ca, 28);
-
-const bankLights = {
-  rear: new THREE.PointLight(0x4bdcff, 0, 5, 2),
-  lift: new THREE.PointLight(0x8a8dff, 0, 4, 2),
-  rcs: new THREE.PointLight(0xff5a9b, 0, 3.5, 2),
-};
-bankLights.rear.position.set(0, 0.22, 2.02);
-bankLights.lift.position.set(0, -0.48, -0.1);
-bankLights.rcs.position.set(0, 0.04, 0);
-Object.values(bankLights).forEach((light) => exhaustRoot.add(light));
+const airRearPool = createAirReleasePool('rear', 180);
+const airLiftPool = createAirReleasePool('lift', 360);
+const airRcsPool = createAirReleasePool('rcs', 72);
 
 loadStatus.textContent = 'Loading the flight hardware...';
 window.setTimeout(() => loadingScreen.classList.add('hidden'), 20000);
@@ -1217,6 +1113,12 @@ function finalizeCarModel(model, carId, token) {
   vehicleRoot.quaternion.identity();
   vehicleRoot.updateMatrixWorld(true);
   const supportBox = new THREE.Box3().setFromObject(model);
+  vehicleLights.configure(model);
+  effects.lift.forEach((jet) => { jet.group.position.y = supportBox.min.y + 0.04; });
+  effects.rear.forEach((jet) => {
+    jet.group.position.z = supportBox.max.z + 0.035;
+    jet.group.position.y = supportBox.min.y + 0.35;
+  });
   vehicleSupportOffset = THREE.MathUtils.clamp(-supportBox.min.y + SUPPORT_EPSILON, 0.08, 1.35);
   setVehicleSupportCorners(supportBox);
   vehicleRoot.position.copy(savedVehiclePosition);
@@ -1227,7 +1129,15 @@ function finalizeCarModel(model, carId, token) {
     node.castShadow = true;
     node.receiveShadow = true;
     if (node.material) {
-      node.material.side = THREE.DoubleSide;
+      node.material.forceSinglePass = true;
+      // The source GLB's glass requests a transmission render of the entire
+      // scene. Tinted alpha glass keeps the windows without that extra pass.
+      if (node.material.transmission > 0) {
+        node.material.transmission = 0;
+        node.material.transparent = true;
+        node.material.opacity = 0.3;
+        node.material.depthWrite = false;
+      }
       if ('envMapIntensity' in node.material) node.material.envMapIntensity = 1.4;
       if ('emissiveIntensity' in node.material) node.material.emissiveIntensity = Math.min(node.material.emissiveIntensity ?? 0.2, 0.65);
     }
@@ -1246,8 +1156,8 @@ function finalizeCarModel(model, carId, token) {
   showToastMessage(`${CAR_OPTIONS[carId].label} LOADED / VEHICLE RESET`);
 }
 
-function loadCarModel(carId = '2026') {
-  const option = CAR_OPTIONS[carId] ?? CAR_OPTIONS['2026'];
+function loadCarModel(carId = '2020') {
+  const option = CAR_OPTIONS[carId] ?? CAR_OPTIONS['2020'];
   const token = ++carLoadToken;
   placeholder.visible = true;
   loadStatus.textContent = `Loading ${option.label}...`;
@@ -1284,7 +1194,7 @@ function loadCarModel(carId = '2026') {
 }
 
 const requestedCar = new URLSearchParams(window.location.search).get('car');
-loadCarModel(CAR_OPTIONS[requestedCar] ? requestedCar : '2026');
+loadCarModel(CAR_OPTIONS[requestedCar] ? requestedCar : '2020');
 
 function flatTerrain(height, name = 'ROAD') {
   return { hasSurface: true, height, normal: tmp.surfaceNormal.set(0, 1, 0), tangent: tmp.surfaceTangent.copy(FORWARD), name, type: 'ground', surfaceZ: null };
@@ -1561,6 +1471,21 @@ function updatePhysicsStep(dt) {
   tmp.right.copy(RIGHT).applyQuaternion(physics.quaternion).normalize();
   const terrain = getTerrainInfo(physics.position.x, physics.position.z);
 
+  // Apply ground steering directly to both heading and travel velocity. The
+  // previous torque-only steering was heavily damped by the contact solver,
+  // so A/D could animate the nose without producing a useful road turn.
+  if (physics.wheelContact && terrain.hasSurface && input.steer !== 0) {
+    const groundSpeed = Math.abs(physics.velocity.dot(tmp.forward));
+    const steeringRate = THREE.MathUtils.lerp(1.25, 2.45, THREE.MathUtils.clamp(groundSpeed / 18, 0, 1));
+    const steerAngle = input.steer * steeringRate * dt;
+    tmp.steerDelta.setFromAxisAngle(terrain.normal, steerAngle);
+    physics.quaternion.premultiply(tmp.steerDelta).normalize();
+    if (groundSpeed > 0.25) physics.velocity.applyAxisAngle(terrain.normal, steerAngle * 0.92);
+    tmp.forward.copy(FORWARD).applyQuaternion(physics.quaternion).normalize();
+    tmp.up.copy(UP).applyQuaternion(physics.quaternion).normalize();
+    tmp.right.copy(RIGHT).applyQuaternion(physics.quaternion).normalize();
+  }
+
   const rearPower = input.rear * (input.boost ? 102000 : 68000);
   const liftPower = input.lift * 33000;
   const manualSpiral = !physics.wheelContact && input.spiral;
@@ -1586,15 +1511,6 @@ function updatePhysicsStep(dt) {
   }
 
   if (liftPower > 0 && physics.air > 0) applyForce(tmp.up.clone().multiplyScalar(liftPower), new THREE.Vector3(0, -0.42, 0), dt);
-  if (physics.wheelContact && terrain.hasSurface && input.steer !== 0) {
-    const groundSpeed = Math.abs(physics.velocity.dot(tmp.forward));
-    // Steering authority tapers at speed so a full-speed run cannot snap into
-    // an uncontrolled spin. Arrow keys use the separate yaw control below.
-    const steeringAuthority = Math.min(1, Math.max(groundSpeed / 0.8, Math.abs(input.steer) * 0.35));
-    const speedGrip = 1 / (1 + groundSpeed / 24);
-    physics.angularVelocity.addScaledVector(terrain.normal, input.steer * (1.0 + 1.6 * speedGrip) * steeringAuthority * dt);
-  }
-
   if (rcsPower > 0 && physics.air > 0) {
     // Left/right arrows rotate the heading (yaw) in both modes. They no
     // longer use the forward axis, which was a barrel-roll and looked like a
@@ -1652,7 +1568,8 @@ function updatePhysicsStep(dt) {
   physics.angularVelocity.multiplyScalar(Math.exp(-angularDamping * dt));
 
   const thrustUsage = Math.min(1, input.rear * (input.boost ? 1.8 : 0.85) + input.lift * 0.95 + rcsPower * 0.24);
-  physics.air = Math.max(0, physics.air - thrustUsage * dt * 4.15);
+  const rechargeRate = thrustUsage > 0.01 ? 0 : (physics.wheelContact ? THRUSTER_RECHARGE_GROUND : THRUSTER_RECHARGE_AIR);
+  physics.air = THREE.MathUtils.clamp(physics.air - thrustUsage * dt * 4.15 + rechargeRate * dt, 0, 100);
   physics.temperature = THREE.MathUtils.damp(physics.temperature, 29 + thrustUsage * 52 + speed * 0.05, 1.7, dt);
   if (physics.air <= 0) {
     input.rear = 0;
@@ -1911,24 +1828,25 @@ function updateJet(jet, power) {
   const value = THREE.MathUtils.clamp(power, 0, 1);
   jet.power = value;
   const active = value > 0.02;
-  jet.plume.material.opacity = active ? 0.16 + value * 0.46 : 0;
-  jet.core.material.opacity = active ? 0.36 + value * 0.56 : 0;
+  jet.plume.material.opacity = active ? 0.08 + value * 0.2 : 0;
+  jet.core.material.opacity = active ? 0.14 + value * 0.25 : 0;
   jet.plume.visible = active;
   jet.core.visible = active;
-  const length = value * (jet.channel === 'rear' && input.boost ? 1.24 : 1);
-  const width = 0.45 + value * 0.55;
+  const length = value * (jet.channel === 'rear' ? (input.boost ? 1.5 : 1.22) : jet.channel === 'lift' ? 1.35 : 1.08);
+  const width = 0.55 + value * 0.8;
   jet.plume.scale.set(width, length, width);
   jet.core.scale.set(0.78, value, 0.78);
 }
 
 function emitAirReleaseFromJets(pool, jets, pressure, rate, dt, boost = false) {
-  pool.spawnAccumulator += pressure * rate * dt;
+  const budget = renderQuality === 'low' ? 0.6 : 1;
+  pool.spawnAccumulator += pressure * rate * budget * dt;
   let emitted = 0;
-  while (pool.spawnAccumulator >= 1 && emitted < 6) {
+  while (pool.spawnAccumulator >= 1 && emitted < 12) {
     pool.spawnAccumulator -= 1;
-    let jet = jets[Math.floor(Math.random() * jets.length)];
+    let jet = jets[pool.nextJet++ % jets.length];
     if (jets.length > 1 && jet.power <= 0.02) jet = jets.find((candidate) => candidate.power > 0.02) ?? jet;
-    spawnAirReleaseParticle(pool, jet, Math.max(pressure, jet.power), boost);
+    pool.emit(jet, Math.max(pressure, jet.power), physics, boost);
     emitted += 1;
   }
 }
@@ -1938,7 +1856,7 @@ function updateEffects(dt) {
   // Keep a visible low-pressure vapor trail while the car is accelerating on
   // the road, even when W is using the ground motor rather than ArrowUp's
   // dedicated rear-thruster force. Full rear/boost thrust still dominates it.
-  const driveVapor = physics.wheelContact && input.drive > 0 ? 0.32 : 0;
+  const driveVapor = physics.wheelContact && input.drive > 0 ? 0.5 : 0;
   const rearDemand = Math.max(driveVapor, input.rear * (input.boost ? 1 : 0.82)) * reservoir;
   const liftDemand = input.lift * reservoir;
   const spiral = !physics.wheelContact ? (Math.abs(input.spiral) + (autoSpiral ? 0.75 : 0)) * reservoir : 0;
@@ -1955,14 +1873,11 @@ function updateEffects(dt) {
   });
 
   if (!paused && !helpOpen) {
-    emitAirReleaseFromJets(airRearPool, effects.rear, visualPressure.rear, input.boost ? 42 : 28, dt, input.boost);
-    emitAirReleaseFromJets(airLiftPool, effects.lift, visualPressure.lift, 34, dt);
-    emitAirReleaseFromJets(airRcsPool, effects.rcs, visualPressure.rcs, 28, dt);
-    airReleasePools.forEach((pool) => updateAirReleasePool(pool, dt));
+    emitAirReleaseFromJets(airRearPool, effects.rear, visualPressure.rear, input.boost ? 130 : 100, dt, input.boost);
+    emitAirReleaseFromJets(airLiftPool, effects.lift, visualPressure.lift, 240, dt);
+    emitAirReleaseFromJets(airRcsPool, effects.rcs, visualPressure.rcs, 48, dt);
+    airReleasePools.forEach((pool) => pool.update(dt, smokeGroundHeight, canvas.height));
   }
-  bankLights.rear.intensity = visualPressure.rear * 2.7;
-  bankLights.lift.intensity = visualPressure.lift * 2.2;
-  bankLights.rcs.intensity = visualPressure.rcs * 1.4;
   updateAudio(visualPressure.rear * (input.boost ? 118000 : 76000), visualPressure.lift * 33000, visualPressure.rcs);
   cameraShake = Math.max(0, cameraShake - dt * 2.9);
 }
@@ -1980,10 +1895,12 @@ function updateCamera(dt) {
     cameraRoll = THREE.MathUtils.damp(cameraRoll, 0, 6, dt);
     sideCamera.up.set(0, 1, 0);
     sideCamera.lookAt(tmp.cameraTarget);
-    sideCamera.left = -72;
-    sideCamera.right = 72;
-    sideCamera.top = 42;
-    sideCamera.bottom = -42;
+    const aspect = window.innerWidth / Math.max(window.innerHeight, 1);
+    const halfHeight = Math.max(42, 72 / aspect);
+    sideCamera.left = -halfHeight * aspect;
+    sideCamera.right = halfHeight * aspect;
+    sideCamera.top = halfHeight;
+    sideCamera.bottom = -halfHeight;
     sideCamera.updateProjectionMatrix();
     return;
   }
@@ -2086,18 +2003,18 @@ function applyTheme(nextTheme, announce = true) {
   theme = nextTheme;
   shell.dataset.theme = theme;
   const isDay = theme === 'day';
-  scene.background.set(isDay ? 0x9bbdca : 0x08101b);
+  scene.background.set(isDay ? 0x9bbdca : 0x010204);
   if (scene.fog) {
-    scene.fog.color.set(isDay ? 0x9bbdca : 0x08101b);
+    scene.fog.color.set(isDay ? 0x9bbdca : 0x010204);
     scene.fog.near = isDay ? 85 : 45;
     scene.fog.far = isDay ? 280 : 240;
   }
-  hemiLight.color.set(isDay ? 0xd6edff : 0x8ec7ff);
-  hemiLight.groundColor.set(isDay ? 0x71858d : 0x151821);
-  hemiLight.intensity = isDay ? 2.2 : 1.55;
-  sunLight.intensity = isDay ? 4.4 : 3.5;
+  hemiLight.color.set(isDay ? 0xd6edff : 0x747474);
+  hemiLight.groundColor.set(isDay ? 0x71858d : 0x070707);
+  hemiLight.intensity = isDay ? 2.2 : 2.0;
+  sunLight.intensity = isDay ? 4.4 : 1.45;
   sunLight.color.set(isDay ? 0xfff2d7 : 0xffe7bd);
-  rimLight.intensity = isDay ? 1.4 : 2.4;
+  rimLight.intensity = isDay ? 1.4 : 1.2;
   const stars = environment.getObjectByName('stars');
   if (stars) stars.visible = !isDay;
   document.querySelector('#theme-button').title = isDay ? 'Switch to night theme' : 'Switch to day theme';
@@ -2204,6 +2121,23 @@ function toggleCameraLock(force) {
   showToastMessage(cameraSteerLock ? 'CAMERA HEADING LOCKED' : 'CAMERA HEADING FOLLOWING');
 }
 
+function toggleHeadlights() {
+  vehicleLights.setEnabled(!vehicleLights.enabled);
+  const button = document.querySelector('#headlights-button');
+  button.classList.toggle('active', vehicleLights.enabled);
+  button.setAttribute('aria-pressed', String(vehicleLights.enabled));
+  button.title = `Headlights ${vehicleLights.enabled ? 'on' : 'off'} (L)`;
+  showToastMessage(`HEADLIGHTS ${vehicleLights.enabled ? 'ON' : 'OFF'}`);
+}
+
+function applyRenderQuality() {
+  renderer.setPixelRatio(pixelRatioFor(window.innerWidth, window.innerHeight, window.devicePixelRatio,
+    renderQuality, renderQuality === 'auto' ? adaptiveResolution.scale : 1));
+  const button = document.querySelector('#quality-button');
+  button.textContent = renderQuality === 'balanced' ? 'BAL' : renderQuality.toUpperCase();
+  button.title = `Rendering quality: ${renderQuality}. Click to change.`;
+}
+
 window.addEventListener('keydown', (event) => {
   const blocked = ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
   if (blocked.includes(event.code)) event.preventDefault();
@@ -2219,6 +2153,7 @@ window.addEventListener('keydown', (event) => {
     if (event.code === 'Digit1') setTrackMode(1);
     if (event.code === 'Digit2') setTrackMode(2);
     if (event.code === 'KeyB') toggleTraffic();
+    if (event.code === 'KeyL') toggleHeadlights();
   }
   if (helpOpen && event.code !== 'KeyH') return;
   if (!event.repeat && event.code === 'KeyQ') startSingleSpin(-1);
@@ -2245,6 +2180,13 @@ document.querySelector('#sound-button').addEventListener('click', () => {
   showToastMessage(audioEnabled ? 'THRUSTER AUDIO ONLINE' : 'THRUSTER AUDIO MUTED');
 });
 document.querySelector('#pause-button').addEventListener('click', () => togglePause());
+document.querySelector('#headlights-button').addEventListener('click', toggleHeadlights);
+document.querySelector('#quality-button').addEventListener('click', () => {
+  renderQuality = qualityModes[(qualityModes.indexOf(renderQuality) + 1) % qualityModes.length];
+  adaptiveResolution.scale = 1;
+  applyRenderQuality();
+  showToastMessage(`RENDER QUALITY / ${renderQuality.toUpperCase()}`);
+});
 document.querySelector('#camera-button').addEventListener('click', () => cycleCamera());
 document.querySelector('#camera-lock-button').addEventListener('click', () => toggleCameraLock());
 document.querySelector('#camera-select').addEventListener('change', (event) => setCameraAngle(event.target.value));
@@ -2257,6 +2199,21 @@ document.querySelector('#resume-button').addEventListener('click', () => toggleP
 document.querySelector('#close-help').addEventListener('click', () => toggleHelp(false));
 document.querySelector('#close-help-button').addEventListener('click', () => toggleHelp(false));
 canvas.addEventListener('pointerdown', initAudio);
+document.querySelectorAll('[data-drive-key]').forEach((button) => {
+  const code = button.dataset.driveKey;
+  button.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    if (paused || helpOpen) return;
+    button.setPointerCapture(event.pointerId);
+    initAudio();
+    keys.add(code);
+    if (code === 'KeyQ') startSingleSpin(-1);
+    if (code === 'KeyE') startSingleSpin(1);
+  });
+  for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    button.addEventListener(event, () => keys.delete(code));
+  }
+});
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -2268,25 +2225,39 @@ window.addEventListener('resize', () => {
   sideCamera.bottom = -42;
   sideCamera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  applyRenderQuality();
 });
 
 applyTheme('night', false);
+applyRenderQuality();
 const requestedTrack = new URLSearchParams(window.location.search).get('track');
 if (requestedTrack === '2') setTrackMode(2);
 else resetRun(false);
 showToastMessage('PRESS H FOR CONTROLS / W TO IGNITE');
 
+let hudElapsed = 0;
+let frameElapsed = 0;
 function animate() {
   requestAnimationFrame(animate);
-  const dt = Math.min(clock.getDelta(), 0.04);
+  const frameDt = clock.getDelta();
+  if (document.hidden) { frameElapsed = 0; return; }
+  // Cap high-refresh displays at 60 rendered FPS instead of consuming the
+  // entire GPU at 144/240 Hz. Physics retains its 120 Hz substeps.
+  frameElapsed += frameDt;
+  if (frameElapsed < 1 / 60 - 0.001) return;
+  if (renderQuality === 'auto' && adaptiveResolution.sample(frameElapsed)) applyRenderQuality();
+  const dt = Math.min(frameElapsed, 0.04);
+  frameElapsed = 0;
   if (!paused && !helpOpen) {
     updatePhysics(dt);
     updateTraffic(dt);
   }
   updateEffects(dt);
   updateCamera(dt);
-  updateHUD(dt);
+  streetLighting.update(activeTrack, physics.position, theme === 'day');
+  vehicleLights.update(input.drive < 0 && physics.velocity.dot(tmp.forward) > 1);
+  hudElapsed += dt;
+  if (hudElapsed >= 0.1) { updateHUD(hudElapsed); hudElapsed = 0; }
   const renderCamera = activeTrack === 2 && cameraAngle === 'stunt-side' ? sideCamera : camera;
   renderer.render(scene, renderCamera);
 }
