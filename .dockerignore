@@ -10,3 +10,4 @@ artifacts
 blender_ramp
 !public/models/*.glb
 !public/models/*.stl
+!public/textures/*.png

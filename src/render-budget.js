@@ -37,24 +37,8 @@ export function batchScenery(root) {
   }
 }
 
-export function pixelRatioFor(width, height, deviceRatio = 1, quality = 'auto', adaptiveScale = 1) {
-  const cap = quality === 'low' ? 0.8 : quality === 'high' ? 1.5 : quality === 'balanced' ? 1 : 1.25;
-  const pixelBudget = quality === 'low' ? 600_000 : quality === 'high' ? 1_800_000 : 1_000_000;
-  return Math.max(0.5, Math.min(deviceRatio, cap, Math.sqrt(pixelBudget / Math.max(1, width * height))) * adaptiveScale);
-}
-
-export class AdaptiveResolution {
-  constructor() { this.scale = 1; this.elapsed = 0; this.frames = 0; }
-  sample(dt) {
-    // Ignore long tab switches; never sacrifice collision substeps for FPS.
-    if (dt > 0.25) return false;
-    this.elapsed += dt; this.frames++;
-    if (this.elapsed < 3) return false;
-    const average = this.elapsed / this.frames;
-    const previous = this.scale;
-    if (average > 1 / 42) this.scale = Math.max(0.65, this.scale - 0.1);
-    else if (average < 1 / 58) this.scale = Math.min(1, this.scale + 0.05);
-    this.elapsed = 0; this.frames = 0;
-    return this.scale !== previous;
-  }
+// Clarity never changes with frame time, viewport size, or a quality preset.
+// Performance comes from batching and bounded effects, not a blurry canvas.
+export function nativePixelRatio(deviceRatio = 1) {
+  return Number.isFinite(deviceRatio) && deviceRatio > 0 ? Math.max(1, deviceRatio) : 1;
 }

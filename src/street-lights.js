@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 export function createStreetLighting(scene) {
-  const locations = { 1: [], 2: [] };
+  const locations = { 1: [], 2: [], 3: [] };
   const spots = Array.from({ length: 4 }, (_, index) => {
     const spot = new THREE.SpotLight(0xffe4b6, 1000, 46, 1.08, 0.75, 2);
     spot.name = `pooled-streetlight-${index}`;

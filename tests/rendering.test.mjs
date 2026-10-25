@@ -2,10 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { measureVehicleLamps, createVehicleLights } from '../src/vehicle-lights.js';
-import { batchScenery, pixelRatioFor, AdaptiveResolution } from '../src/render-budget.js';
+import { batchScenery, nativePixelRatio } from '../src/render-budget.js';
 import { createStreetLighting } from '../src/street-lights.js';
 import { createPressureSmoke } from '../src/pressure-smoke.js';
 import { loadModel } from './model-helper.mjs';
+import { createSmokeAtlasData } from '../src/smoke-atlas.js';
 
 test('optimized Roadster retains actual left/right headlamp and rear lamp locations', async () => {
   const original = await loadModel('tesla-roadster-2020.glb');
@@ -70,19 +71,32 @@ test('street lights have a constant four-light budget across the entire highway'
   }
 });
 
-test('resolution budget respects DPR and responds to slow frames without lowering physics accuracy', () => {
-  assert.ok(pixelRatioFor(1920, 1080, 3, 'auto') < 1);
-  assert.ok(pixelRatioFor(960, 600, 3, 'low') <= 0.8);
-  const adaptive = new AdaptiveResolution();
-  for (let i = 0; i < 120; i++) adaptive.sample(1 / 25);
-  assert.ok(adaptive.scale < 1 && adaptive.scale >= 0.65);
+test('rendering retains native display clarity with no dynamic downscaling', () => {
+  for (const ratio of [1, 1.25, 1.5, 2, 3]) assert.equal(nativePixelRatio(ratio), ratio);
+  assert.equal(nativePixelRatio(Number.NaN), 1);
+  assert.equal(nativePixelRatio(0), 1);
+});
+
+test('smoke atlas contains four distinct shaded clouds with transparent edges', () => {
+  const { data, width, height } = createSmokeAtlasData(24);
+  assert.equal(width, height * 4);
+  const alphaValues = new Set(), shades = new Set();
+  for (let i = 0; i < data.length; i += 4) {
+    alphaValues.add(data[i + 3]);
+    if (data[i + 3] > 40) shades.add(data[i]);
+  }
+  assert.ok(alphaValues.size > 40 && shades.size > 30);
+  assert.equal(data[3], 0);
+  const first = data.slice(0, height * 4), second = data.slice(height * 4, height * 8);
+  assert.notDeepEqual(first, second);
 });
 
 test('smoke uploads live buffers, travels from each nozzle, spreads on ground, and stays bounded', () => {
   const pool = createPressureSmoke(new THREE.Group(), 'lift', 32);
   const jet = { group: { position: new THREE.Vector3(0.6, -0.5, 1) }, direction: new THREE.Vector3(0, -1, 0) };
   const physics = { position: new THREE.Vector3(0, 2, 0), velocity: new THREE.Vector3(), quaternion: new THREE.Quaternion() };
-  assert.equal(pool.positions, pool.geometry.attributes.position.array);
+  assert.ok(pool.geometry.isInstancedBufferGeometry);
+  assert.equal(pool.positions, pool.geometry.attributes.cloudPosition.array);
   assert.equal(pool.sizes, pool.geometry.attributes.size.array);
   pool.emit(jet, 1, physics);
   for (let i = 0; i < 20; i++) pool.update(1 / 60, () => 0, 600);
@@ -96,8 +110,9 @@ test('smoke uploads live buffers, travels from each nozzle, spreads on ground, a
   assert.ok(p.position.x < 10, 'Emitted smoke must not remain parented to the car');
   for (let i = 0; i < 100; i++) pool.emit(jet, 1, physics);
   assert.equal(pool.particles.length, 32);
-  for (let i = 0; i < 150; i++) pool.update(1 / 60, () => 0, 600);
+  for (let i = 0; i < 180; i++) pool.update(1 / 60, () => 0);
   assert.ok(pool.particles.every((particle) => !particle.active));
+  assert.equal(pool.geometry.instanceCount, 0);
   pool.clear();
   assert.ok(pool.alphas.every((value) => value === 0));
 });

@@ -11,7 +11,7 @@ Usage (Blender 3.4+):
 
 The script writes a .blend file and a preview PNG beside itself.  It has no
 third-party Python dependencies and is deliberately compatible with Blender
-3.4 and current 4.x builds.
+3.4A     and current 4.x builds.
 """
 
 from __future__ import annotations

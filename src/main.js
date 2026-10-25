@@ -1,10 +1,14 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
-import { batchScenery, pixelRatioFor, AdaptiveResolution } from './render-budget.js';
+import { batchScenery, nativePixelRatio } from './render-budget.js';
 import { createVehicleLights } from './vehicle-lights.js';
 import { createStreetLighting } from './street-lights.js';
 import { createPressureSmoke } from './pressure-smoke.js';
+import { readControls } from './controls.js';
+import { createSpinPlan, sampleSpin } from './air-spin.js';
+import { DEFAULT_SETTINGS, SETTING_RANGES, formatSettingValue, loadSettings, saveSettings } from './settings.js';
+import { STUNT_VEHICLE_ASSETS, getStuntVehicleLayout, getStuntVehicleRotation } from './stunt-vehicles.js';
 import './style.css';
 
 const CAR_OPTIONS = {
@@ -22,7 +26,7 @@ const ZERO = new THREE.Vector3();
 // The highway is intentionally flat; its old ramp-only terrain branch was an
 // invisible obstacle because the matching mesh is not part of Road 01.
 const HIGHWAY_BOUNDS = Object.freeze({ halfWidth: 11.25, minZ: -4890, maxZ: 104 });
-const STUNT_BOUNDS = Object.freeze({ halfWidth: 72, minZ: -170, maxZ: 104 });
+const STUNT_BOUNDS = Object.freeze({ halfWidth: 72, minZ: -360, maxZ: 104 });
 const STUNT_RAMP = Object.freeze({
   startZ: -55,
   radius: 18,
@@ -34,6 +38,8 @@ const STUNT_RAMP = Object.freeze({
   endAngle: Math.PI,
   deckLength: 24,
 });
+const STUNT_JUMP_BOUNDS = Object.freeze({ halfWidth: 20, minZ: -100000, maxZ: 104 });
+const STUNT_JUMP_ROAD = Object.freeze({ sectionLength: 192, sectionCount: 7, roadWidth: 36, shoulderWidth: 4, targetZ: -108, parkingLaneX: -3 });
 const MAX_SURFACE_PENETRATION = 3.2;
 const RAMP_CONTACT_MARGIN = 1.4;
 const RAMP_EDGE_MARGIN = 0.65;
@@ -41,8 +47,6 @@ const GROUND_LOCK_DISTANCE = 0.8;
 const GROUND_LANDING_MARGIN = 0.35;
 const SUPPORT_EPSILON = 0.006;
 const PHYSICS_STEP = 1 / 120;
-const SINGLE_SPIN_DURATION = 0.48;
-const SINGLE_SPIN_RATE = TAU / SINGLE_SPIN_DURATION;
 const THRUSTER_RECHARGE_GROUND = 8;
 const THRUSTER_RECHARGE_AIR = 4;
 
@@ -50,11 +54,13 @@ document.querySelector('#app').innerHTML = `
   <main class="game-shell" id="game-shell">
     <canvas id="game-canvas"></canvas>
     <div class="loading-screen" id="loading-screen">
-      <div class="loading-mark"><span></span><span></span><span></span></div>
+      <video class="loading-video" id="loading-video" muted playsinline autoplay loop preload="auto" src="/loading/roadster-loading.mp4"></video>
+      <div class="loading-vignette"></div><div class="loading-letterbox loading-letterbox-top"></div><div class="loading-letterbox loading-letterbox-bottom"></div>
+      <div class="loading-copy"><div class="loading-mark"><span></span><span></span><span></span></div>
       <p class="eyebrow">THRUST LAB / FLIGHT DECK 01</p>
       <h1>CALIBRATING<br><em>ROADSTER</em></h1>
       <div class="load-track"><span id="load-bar"></span></div>
-      <p class="load-status" id="load-status">Warming the simulation...</p>
+      <p class="load-status" id="load-status">Warming the simulation...</p></div>
     </div>
     <div class="hud" id="hud" aria-live="polite">
       <header class="topbar">
@@ -65,8 +71,10 @@ document.querySelector('#app').innerHTML = `
         <div class="topbar-center"><span class="status-dot"></span><span id="flight-status">SYSTEMS NOMINAL</span></div>
         <div class="top-actions">
           <button class="icon-button" id="sound-button" title="Toggle thruster audio" aria-label="Toggle thruster audio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h4l5 4V6l-5 4H4Z"/><path d="M17 9.5a4 4 0 0 1 0 5M19.5 7a7.5 7.5 0 0 1 0 10"/></svg></button>
-          <button class="icon-button active" id="headlights-button" title="Headlights on (L)" aria-label="Toggle headlights" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5c8 0 8 14 0 14V5ZM3 6h6M2 10h7M2 14h7M3 18h6"/></svg></button>
-          <button class="icon-button quality-button" id="quality-button" title="Rendering quality: Auto" aria-label="Change rendering quality">AUTO</button>
+           <button class="icon-button active" id="headlights-button" title="Headlights on (L)" aria-label="Toggle headlights" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5c8 0 8 14 0 14V5ZM3 6h6M2 10h7M2 14h7M3 18h6"/></svg></button>
+           <button class="icon-button" id="settings-button" title="Open settings (G)" aria-label="Open settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/><circle cx="12" cy="12" r="3.4"/></svg></button>
+           <button class="icon-button dash-text-button" id="stabilize-button" title="Air stabilization on" aria-label="Toggle air stabilization">STB</button>
+           <button class="icon-button dash-text-button" id="auto-thrust-button" title="Auto thrust off" aria-label="Toggle auto thrust">AT</button>
           <button class="icon-button" id="camera-button" title="Switch camera angle" aria-label="Switch camera angle"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h3l1.4-2h7.2l1.4 2H20v11H4v-11Z"/><circle cx="12" cy="13" r="3.2"/><path d="M12 2v3M12 19v3M2 13h3M19 13h3"/></svg></button>
           <button class="icon-button" id="camera-lock-button" title="Lock camera heading" aria-label="Lock camera heading"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg></button>
           <button class="icon-button" id="spiral-button" title="Toggle automatic spiral" aria-label="Toggle automatic spiral"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8.5a6.5 6.5 0 1 1 1 8.2"/><path d="m5 5 1 3.5L9.5 7"/><path d="M12 8v4l3 2"/></svg></button>
@@ -123,14 +131,14 @@ document.querySelector('#app').innerHTML = `
       </section>
       <div class="toast" id="toast"></div>
       <div class="touch-controls" aria-label="Touch driving controls">
-        <button data-drive-key="KeyA" aria-label="Steer left">◀</button>
-        <button data-drive-key="KeyW" aria-label="Drive forward">DRIVE</button>
-        <button data-drive-key="KeyD" aria-label="Steer right">▶</button>
+        <button data-drive-key="ArrowLeft" aria-label="Steer left">◀</button>
+        <button data-drive-key="ArrowUp" aria-label="Drive forward">DRIVE</button>
+        <button data-drive-key="ArrowRight" aria-label="Steer right">▶</button>
         <button data-drive-key="Space" aria-label="Lift thrusters">LIFT</button>
         <button data-drive-key="KeyQ" aria-label="Spin left">Q ↶</button>
-        <button data-drive-key="KeyS" aria-label="Brake or reverse">BRAKE</button>
+        <button data-drive-key="ArrowDown" aria-label="Brake or reverse">BRAKE</button>
         <button data-drive-key="KeyE" aria-label="Spin right">E ↷</button>
-        <button data-drive-key="ArrowUp" aria-label="Rear thrust">THRUST</button>
+        <button data-drive-key="KeyW" aria-label="Rear thrust">THRUST</button>
       </div>
     </div>
 
@@ -140,18 +148,18 @@ document.querySelector('#app').innerHTML = `
         <p class="eyebrow">FLIGHT DECK / QUICKSTART</p>
         <h2>COMMAND THE<br><em>VECTOR</em></h2>
         <div class="help-grid">
-          <div><span class="keycap large">W</span><span class="keycap large">S</span><p><b>DRIVE / REVERSE</b><small>Ground acceleration, braking, and reverse. Release to coast and settle.</small></p></div>
-          <div><span class="keycap large">A</span><span class="keycap large">D</span><p><b>STEERING</b><small>Turn the Roadster on the ground. No thrust is used by these keys.</small></p></div>
-          <div><span class="keycap large">↑</span><p><b>REAR THRUST</b><small>Fire the integrated rear exhaust bank. Hold Shift for boost.</small></p></div>
-          <div><span class="keycap large">↓</span><p><b>BOTTOM LIFT</b><small>Fire the underbody lift bank to jump. Space is the alternate lift control.</small></p></div>
-          <div><span class="keycap large">←</span><span class="keycap large">→</span><p><b>YAW ROTATION</b><small>Rotate the Roadster left/right on the ground or in the air. These keys do not barrel-roll the car.</small></p></div>
+          <div><span class="keycap large">↑</span><span class="keycap large">↓</span><p><b>DRIVE / REVERSE</b><small>Arrow keys accelerate, brake, and reverse without firing thrusters.</small></p></div>
+          <div><span class="keycap large">←</span><span class="keycap large">→</span><p><b>STEERING</b><small>Steer left/right on the road. No thrust is used by these keys.</small></p></div>
+          <div><span class="keycap large">W</span><p><b>REAR THRUST</b><small>Fire the rear pressure jets. Hold Shift for boost.</small></p></div>
+          <div><span class="keycap large">S</span><p><b>BOTTOM LIFT</b><small>Fire the underbody lift jets on the ground or in the air. Space also lifts.</small></p></div>
+          <div><span class="keycap large">A</span><span class="keycap large">D</span><p><b>YAW THRUST</b><small>Rotate left/right using the side jets, on the ground or in the air.</small></p></div>
           <div><span class="keycap large">SPACE</span><p><b>VERTICAL LIFT</b><small>Bottom cold-gas lift jets push against gravity. Watch your air.</small></p></div>
-           <div><span class="keycap large">Q</span><span class="keycap large">E</span><p><b>ONE-SHOT AIR SPIN</b><small>Press Q for one complete left spin or E for one complete right spin while airborne.</small></p></div>
+           <div><span class="keycap large">Q</span><span class="keycap large">E</span><p><b>SPIN + UPRIGHT RECOVERY</b><small>One left/right spin, then wheels-down recovery. Inverted ramp jumps finish upright too.</small></p></div>
           <div><span class="keycap large">Z</span><span class="keycap large">X</span><p><b>SPIRAL CONTROL</b><small>Manual left/right spiral while airborne. Hold lift to keep the arc alive.</small></p></div>
           <div><span class="keycap large">O</span><p><b>AUTO SPIRAL</b><small>Toggle an assisted roll only after you are airborne.</small></p></div>
           <div><span class="keycap large">C</span><p><b>ACTION CAMERA</b><small>Switch chase, cinematic, ramp, and the Track 02 side-profile view.</small></p></div>
           <div><span class="keycap large">V</span><p><b>VACUUM ADHESION</b><small>Stick the Roadster to a ramp or upside-down surface. Press again to release.</small></p></div>
-          <div><span class="keycap large">1</span><span class="keycap large">2</span><p><b>ENVIRONMENT</b><small>Road launch or Stunt Vector track mode.</small></p></div>
+           <div><span class="keycap large">1</span><span class="keycap large">2</span><span class="keycap large">3</span><p><b>ENVIRONMENT</b><small>Road launch, Stunt Vector, or six-lane Linear Park track.</small></p></div>
           <div><span class="keycap large">B</span><p><b>TRAFFIC CARS</b><small>Toggle the decorative traffic vehicles on or off.</small></p></div>
           <div><span class="keycap large">T</span><p><b>THEME SHIFT</b><small>Switch between daylight test range and night show mode.</small></p></div>
           <div><span class="keycap large">L</span><p><b>HEADLIGHTS</b><small>Toggle the white front beams and red running lights. Brake lights remain active.</small></p></div>
@@ -162,6 +170,37 @@ document.querySelector('#app').innerHTML = `
       </div>
     </div>
     <div class="pause-overlay" id="pause-overlay"><div class="pause-card glass-panel"><span class="pause-icon">Ⅱ</span><p class="eyebrow">SIMULATION PAUSED</p><h2>HOLD<br><em>POSITION</em></h2><p>Press P or the pause button to resume your run.</p><button class="launch-button" id="resume-button">RESUME SIMULATION <span>↗</span></button></div></div>
+    <div class="settings-overlay" id="settings-overlay" aria-hidden="true">
+      <section class="settings-panel glass-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <button class="close-button" id="close-settings" aria-label="Close settings">×</button>
+        <p class="eyebrow">FLIGHT DECK / CUSTOM CONTROL</p><h2 id="settings-title">SETTINGS<br><em>CONTROL LAB</em></h2>
+        <p class="settings-intro">Tune the response without changing the fixed high-clarity renderer.</p>
+         <div class="settings-grid">
+           <label class="setting-row"><span><b>STEERING SENSITIVITY</b><output id="steering-sensitivity-value"></output></span><input id="steering-sensitivity" type="range" min="0.25" max="2" step="0.05"></label>
+           <label class="setting-row"><span><b>SPEED CONTROL</b><output id="speed-control-value"></output></span><input id="speed-control" type="range" min="0.5" max="1.5" step="0.05"></label>
+           <label class="setting-row"><span><b>THRUST SENSITIVITY</b><output id="thrust-sensitivity-value"></output></span><input id="thrust-sensitivity" type="range" min="0.5" max="1.5" step="0.05"></label>
+           <label class="setting-row"><span><b>SPIN CONTROL</b><output id="spin-sensitivity-value"></output></span><input id="spin-sensitivity" type="range" min="0.5" max="1.75" step="0.05"></label>
+           <label class="setting-row"><span><b>SPIRAL CONTROL</b><output id="spiral-sensitivity-value"></output></span><input id="spiral-sensitivity" type="range" min="0.25" max="2" step="0.05"></label>
+           <label class="setting-row"><span><b>GYROSCOPE SENSITIVITY</b><output id="gyro-sensitivity-value"></output></span><input id="gyro-sensitivity" type="range" min="0.25" max="2" step="0.05"></label>
+         </div>
+         <section class="stunt-settings-card" aria-labelledby="stunt-settings-title">
+           <p class="eyebrow">TRACK 03 / LINEAR PARK</p>
+           <h3 id="stunt-settings-title">FORMATION<br><em>CONTROL</em></h3>
+           <p>Set how many supplied Tesla stunt models park one behind another on the six-lane road and how much road space sits between them.</p>
+           <div class="settings-grid stunt-settings-grid">
+             <label class="setting-row"><span><b>VEHICLE COUNT</b><output id="stunt-vehicle-count-value"></output></span><input id="stunt-vehicle-count" type="range" min="1" max="5" step="1"></label>
+             <label class="setting-row"><span><b>VEHICLE SPACING</b><output id="stunt-vehicle-spacing-value"></output></span><input id="stunt-vehicle-spacing" type="range" min="1" max="12" step="0.5"></label>
+           </div>
+           <div class="stunt-asset-strip"><span>LOADED TARGETS</span><b id="stunt-asset-status">STREAMING 0 / 5</b></div>
+         </section>
+         <div class="settings-toggles">
+          <label class="toggle-row"><span><b>STABILIZE IN AIR</b><small>Level pitch and roll when no spin is active.</small></span><input id="stabilize-in-air" type="checkbox"><i></i></label>
+          <label class="toggle-row"><span><b>AUTO THRUST</b><small>Maintain forward pressure during airborne/ramp travel.</small></span><input id="auto-thrust" type="checkbox"><i></i></label>
+          <label class="toggle-row"><span><b>GYROSCOPE CONTROLS</b><small>Tilt the device to steer and yaw.</small></span><input id="gyro-enabled" type="checkbox"><i></i></label>
+        </div>
+         <div class="settings-actions"><button class="secondary-button" id="gyro-permission">ENABLE DEVICE GYRO</button><button class="secondary-button" id="reset-settings">RESET DEFAULTS</button><button class="launch-button" id="close-settings-button">SAVE &amp; RETURN <span>↗</span></button></div>
+      </section>
+    </div>
   </main>
 `;
 
@@ -170,6 +209,9 @@ const canvas = document.querySelector('#game-canvas');
 const loadingScreen = document.querySelector('#loading-screen');
 const loadBar = document.querySelector('#load-bar');
 const loadStatus = document.querySelector('#load-status');
+const loadingVideo = document.querySelector('#loading-video');
+const loadingStartedAt = performance.now();
+let modelReady = false;
 const topActions = document.querySelector('.top-actions');
 document.querySelector('#hud').append(topActions);
 
@@ -184,12 +226,8 @@ camera.position.set(0, 6, 62);
 const sideCamera = new THREE.OrthographicCamera(-72, 72, 42, -42, 0.1, 500);
 sideCamera.position.set(90, 21, -12);
 
-const qualityModes = ['auto', 'low', 'balanced', 'high'];
-const requestedQuality = new URLSearchParams(window.location.search).get('quality');
-let renderQuality = qualityModes.includes(requestedQuality) ? requestedQuality : 'auto';
-const adaptiveResolution = new AdaptiveResolution();
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'default' });
-renderer.setPixelRatio(pixelRatioFor(window.innerWidth, window.innerHeight, window.devicePixelRatio, renderQuality));
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'default' });
+renderer.setPixelRatio(nativePixelRatio(window.devicePixelRatio));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = false;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -203,9 +241,13 @@ const environment = new THREE.Group();
 world.add(environment);
 const trackOneRoot = new THREE.Group();
 const trackTwoRoot = new THREE.Group();
+const trackThreeRoot = new THREE.Group();
 const trafficRoot = new THREE.Group();
-environment.add(trackOneRoot, trackTwoRoot, trafficRoot);
+environment.add(trackOneRoot, trackTwoRoot, trackThreeRoot, trafficRoot);
 trackTwoRoot.visible = false;
+trackThreeRoot.visible = false;
+const stuntFormationRoot = new THREE.Group();
+trackThreeRoot.add(stuntFormationRoot);
 const vehicleRoot = new THREE.Group();
 world.add(vehicleRoot);
 const vehicleLights = createVehicleLights(vehicleRoot);
@@ -242,6 +284,14 @@ let trafficVisible = false;
 let cameraRoll = 0;
 let vacuumEnabled = false;
 let cameraSteerLock = false;
+let settings = loadSettings();
+let settingsOpen = false;
+let gyroPermissionGranted = false;
+let stuntVehicleTemplates = new Map();
+let stuntVehicleLoadCount = 0;
+let stuntFormationPlaceholders = [];
+let stuntRoadSections = [];
+const gyro = { beta: 0, gamma: 0, active: false };
 
 const physics = {
   mass: 1980,
@@ -262,7 +312,8 @@ const physics = {
   rampTheta: 0,
   spinActive: false,
   spinDirection: 0,
-  spinAngle: 0,
+  spinElapsed: 0,
+  spinPlan: null,
 };
 
 const effects = {
@@ -300,8 +351,6 @@ const tmp = {
   surfaceTangent: new THREE.Vector3(),
   previousPosition: new THREE.Vector3(),
   previousSurfaceDelta: new THREE.Vector3(),
-  spinAxis: new THREE.Vector3(),
-  spinDelta: new THREE.Quaternion(),
   supportCorner: new THREE.Vector3(),
 };
 
@@ -539,6 +588,14 @@ function createTrackTwo() {
   addBox(trackTwoRoot, [1400, 0.16, 1400], [0, -0.12, -180], ground, { castShadow: false, receiveShadow: true });
   addBox(trackTwoRoot, [20, 0.16, 150], [0, -0.02, 20], roadMat, { castShadow: false });
   for (let z = 82; z > -48; z -= 11) addBox(trackTwoRoot, [0.18, 0.03, 4.4], [0, 0.08, z], stripeMat, { castShadow: false });
+  // Long landing/run-out road behind the stunt curve. It gives the inverted
+  // return and Q/E wheels-down recovery a visible destination instead of
+  // ending the playable course immediately behind the ramp.
+  const backsideLength = 285;
+  const backsideCenter = rampEndZ - backsideLength / 2;
+  addBox(trackTwoRoot, [20, 0.16, backsideLength], [0, -0.02, backsideCenter], roadMat, { castShadow: false });
+  for (let z = rampEndZ - 18; z > STUNT_BOUNDS.minZ + 8; z -= 11) addBox(trackTwoRoot, [0.18, 0.03, 4.4], [0, 0.08, z], stripeMat, { castShadow: false });
+  addTrackEdgeRails(trackTwoRoot, rampEndZ - 4, STUNT_BOUNDS.minZ + 4, 10, red, cyan);
   addTrackEdgeRails(trackTwoRoot, 95, startZ, 10, red, cyan);
   createCurvedRamp(trackTwoRoot, { startZ, radius: rampRadius, width: rampWidth, red, cyan, endAngle });
   addBox(trackTwoRoot, [rampWidth, deckThickness, deckLength], [0, rampEndHeight - deckThickness / 2, rampEndZ + deckLength / 2], roadMat, { castShadow: false });
@@ -553,6 +610,144 @@ function createTrackTwo() {
     for (let y = 4; y < supportHeight; y += 4.5) addBox(trackTwoRoot, [rampWidth + 5, 0.12, 0.12], [0, y, startZ - rampRadius * 0.5], supportMat, { castShadow: false });
   }
   createSingleRampLights(trackTwoRoot, red, cyan);
+}
+
+function createStuntRoadSection(offset) {
+  const section = new THREE.Group();
+  section.userData.offset = offset;
+  section.position.z = offset * STUNT_JUMP_ROAD.sectionLength;
+  const roadMat = createMaterial(0x17191d, { roughness: 0.94, metalness: 0.03 });
+  const shoulderMat = createMaterial(0x292b2c, { roughness: 0.97 });
+  const laneMat = createMaterial(0xe7e3d7, { emissive: 0x5e5546, emissiveIntensity: 0.12, roughness: 0.55 });
+  const edgeMat = createMaterial(0xf0ead9, { emissive: 0x5d5549, emissiveIntensity: 0.16, roughness: 0.5 });
+  const amber = createMaterial(0xffc84f, { emissive: 0xa25d0c, emissiveIntensity: 2.4, roughness: 0.45 });
+  const red = createMaterial(0xff4b64, { emissive: 0xff143b, emissiveIntensity: 3.8 });
+  const cyan = createMaterial(0x57e4ff, { emissive: 0x158fca, emissiveIntensity: 3.8 });
+  const halfLength = STUNT_JUMP_ROAD.sectionLength / 2;
+
+  addBox(section, [STUNT_JUMP_ROAD.roadWidth, 0.16, STUNT_JUMP_ROAD.sectionLength], [0, -0.12, 0], roadMat, { castShadow: false, receiveShadow: true });
+  addBox(section, [STUNT_JUMP_ROAD.shoulderWidth, 0.08, STUNT_JUMP_ROAD.sectionLength], [-(STUNT_JUMP_ROAD.roadWidth + STUNT_JUMP_ROAD.shoulderWidth) / 2, -0.1, 0], shoulderMat, { castShadow: false });
+  addBox(section, [STUNT_JUMP_ROAD.shoulderWidth, 0.08, STUNT_JUMP_ROAD.sectionLength], [(STUNT_JUMP_ROAD.roadWidth + STUNT_JUMP_ROAD.shoulderWidth) / 2, -0.1, 0], shoulderMat, { castShadow: false });
+  for (const x of [-12, -6, 0, 6, 12]) {
+    for (let z = -halfLength + 12; z < halfLength; z += 18) {
+      addBox(section, [0.14, 0.025, 7.2], [x, 0.01, z], laneMat, { castShadow: false, receiveShadow: false });
+    }
+  }
+  addBox(section, [0.18, 0.035, STUNT_JUMP_ROAD.sectionLength], [-18, 0.02, 0], edgeMat, { castShadow: false, receiveShadow: false });
+  addBox(section, [0.18, 0.035, STUNT_JUMP_ROAD.sectionLength], [18, 0.02, 0], edgeMat, { castShadow: false, receiveShadow: false });
+  for (let z = -halfLength + 24; z < halfLength; z += 48) {
+    for (const side of [-1, 1]) {
+      const x = side * 21.5;
+      addCylinder(section, 0.08, 5.8, [x, 2.9, z], createMaterial(0x273442, { metalness: 0.8, roughness: 0.25 }), { segments: 8, castShadow: false });
+      addBox(section, [1.65, 0.12, 0.12], [x - side * 0.8, 5.8, z], createMaterial(0x273442, { metalness: 0.8, roughness: 0.25 }), { castShadow: false });
+      addBox(section, [0.38, 0.14, 0.2], [x - side * 1.6, 5.75, z], side < 0 ? red : cyan, { castShadow: false, receiveShadow: false });
+      addBox(section, [0.18, 0.16, 0.18], [x - side * 1.6, 5.75, z], amber, { castShadow: false, receiveShadow: false });
+      streetLighting.register(3, x - side * 1.6, 5.7, section.position.z + z);
+    }
+  }
+  return section;
+}
+
+function createTrackThree() {
+  stuntRoadSections = [];
+  for (let offset = -3; offset <= 3; offset += 1) {
+    const section = createStuntRoadSection(offset);
+    stuntRoadSections.push(section);
+    trackThreeRoot.add(section);
+  }
+  const targetLine = createMaterial(0xffd16a, { emissive: 0x9d5312, emissiveIntensity: 2.4 });
+  addBox(trackThreeRoot, [STUNT_JUMP_ROAD.roadWidth - 1.2, 0.06, 0.18], [0, 0.08, STUNT_JUMP_ROAD.targetZ], targetLine, { castShadow: false, receiveShadow: false });
+  addBox(trackThreeRoot, [0.18, 0.05, 96], [STUNT_JUMP_ROAD.parkingLaneX, 0.08, STUNT_JUMP_ROAD.targetZ - 36], targetLine, { castShadow: false, receiveShadow: false });
+  const label = createLabel('TRACK 03 // LINEAR PARKED VEHICLES', 0xffd16a);
+  label.position.set(-14, 2.2, STUNT_JUMP_ROAD.targetZ - 30);
+  label.scale.set(7.2, 1.7, 1);
+  label.rotation.y = Math.PI / 2;
+  trackThreeRoot.add(label);
+}
+
+function updateTrackThreeRoad() {
+  if (!stuntRoadSections.length) return;
+  const anchor = Math.floor((physics.position.z + STUNT_JUMP_ROAD.sectionLength / 2) / STUNT_JUMP_ROAD.sectionLength) * STUNT_JUMP_ROAD.sectionLength;
+  stuntRoadSections.forEach((section) => {
+    section.position.z = anchor + section.userData.offset * STUNT_JUMP_ROAD.sectionLength;
+  });
+}
+
+function createStuntTargetPlaceholder() {
+  const group = new THREE.Group();
+  group.rotation.y = getStuntVehicleRotation();
+  const body = createMaterial(0x8d9aa7, { metalness: 0.74, roughness: 0.3 });
+  const glass = createMaterial(0x07121d, { metalness: 0.55, roughness: 0.08 });
+  addBox(group, [4.5, 0.82, 2.1], [0, 0.52, 0], body, { castShadow: false });
+  addBox(group, [2.2, 0.44, 1.7], [0, 1.08, 0], glass, { castShadow: false });
+  return group;
+}
+
+function prepareStuntVehicleTemplate(model) {
+  const box = new THREE.Box3().setFromObject(model);
+  const size = box.getSize(new THREE.Vector3());
+  const scale = 4.8 / Math.max(size.x, size.z, 0.01);
+  model.scale.setScalar(scale);
+  model.rotation.y = getStuntVehicleRotation();
+  model.updateMatrixWorld(true);
+  const floorBox = new THREE.Box3().setFromObject(model);
+  model.position.y = -floorBox.min.y + 0.02;
+  model.traverse((node) => {
+    if (!node.isMesh) return;
+    node.castShadow = false;
+    node.receiveShadow = false;
+    if (node.material) {
+      node.material.forceSinglePass = true;
+      if (node.material.transmission > 0) {
+        node.material.transmission = 0;
+        node.material.transparent = true;
+        node.material.opacity = 0.34;
+        node.material.depthWrite = false;
+      }
+      if ('envMapIntensity' in node.material) node.material.envMapIntensity = 1.2;
+    }
+  });
+  model.visible = false;
+  return model;
+}
+
+function updateStuntAssetStatus() {
+  const status = document.querySelector('#stunt-asset-status');
+  if (status) status.textContent = `LOADED TARGETS ${stuntVehicleLoadCount} / ${STUNT_VEHICLE_ASSETS.length}`;
+}
+
+function rebuildStuntFormation() {
+  stuntFormationRoot.clear();
+  stuntFormationPlaceholders = [];
+  const layout = getStuntVehicleLayout({ count: settings.stuntVehicleCount, spacing: settings.stuntVehicleSpacing });
+  layout.positions.forEach((position, index) => {
+    const asset = STUNT_VEHICLE_ASSETS[index % STUNT_VEHICLE_ASSETS.length];
+    const template = stuntVehicleTemplates.get(asset.id);
+    const target = template ? template.clone(true) : createStuntTargetPlaceholder();
+    target.position.x = position.x;
+    target.position.z = STUNT_JUMP_ROAD.targetZ + position.z;
+    target.userData.assetId = asset.id;
+    target.userData.lane = position.lane;
+    target.userData.target = true;
+    target.visible = true;
+    stuntFormationRoot.add(target);
+    if (!template) stuntFormationPlaceholders.push(target);
+  });
+  showToastMessage(`STUNT FORMATION / ${layout.count} TARGETS / ${layout.spacing.toFixed(2)}M GAP`);
+}
+
+function loadStuntVehicleModels() {
+  STUNT_VEHICLE_ASSETS.forEach((asset) => {
+    loader.load(asset.url, (gltf) => {
+      stuntVehicleTemplates.set(asset.id, prepareStuntVehicleTemplate(gltf.scene));
+      stuntVehicleLoadCount += 1;
+      updateStuntAssetStatus();
+      rebuildStuntFormation();
+    }, undefined, () => {
+      stuntVehicleLoadCount += 1;
+      updateStuntAssetStatus();
+    });
+  });
 }
 
 function createCurvedRamp(parent, { startZ, radius, width, red, cyan, endAngle = Math.PI, surfaceY = STUNT_RAMP.surfaceY }) {
@@ -969,11 +1164,13 @@ function createTraffic() {
 
 createRoad();
 createTrackTwo();
+createTrackThree();
 createLightsAndScenery();
 batchScenery(trackOneRoot);
 batchScenery(trackTwoRoot);
 streetLighting.buildPools(1, trackOneRoot);
 streetLighting.buildPools(2, trackTwoRoot);
+streetLighting.buildPools(3, trackThreeRoot);
 createTraffic();
 trafficRoot.visible = trafficVisible;
 
@@ -1002,13 +1199,7 @@ function createPlaceholderCar() {
 }
 createPlaceholderCar();
 
-function createAnchoredCone(radius, length, segments = 14) {
-  const geometry = new THREE.CylinderGeometry(radius, radius * 0.14, length, segments, 1, true);
-  geometry.translate(0, length * 0.5, 0);
-  return geometry;
-}
-
-function createJet(position, exhaustDirection, tint = 0xf2f0e8, scale = 1, channel = 'rcs') {
+function createJet(position, exhaustDirection, scale = 1, channel = 'rcs') {
   const group = new THREE.Group();
   group.position.set(...position);
   group.scale.setScalar(scale);
@@ -1017,36 +1208,26 @@ function createJet(position, exhaustDirection, tint = 0xf2f0e8, scale = 1, chann
   aperture.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), exhaustDirection);
   aperture.renderOrder = 2;
   group.add(aperture);
-  const plumeMaterial = new THREE.MeshBasicMaterial({ color: 0xe9e9e4, transparent: true, opacity: 0, depthWrite: false, depthTest: true });
-  const plume = new THREE.Mesh(createAnchoredCone(0.28, 1.7), plumeMaterial);
-  plume.position.copy(exhaustDirection).multiplyScalar(0.02);
-  plume.quaternion.setFromUnitVectors(UP, exhaustDirection);
-  plume.scale.set(0.04, 0.04, 0.04);
-  group.add(plume);
-  const coreMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: true });
-  const core = new THREE.Mesh(createAnchoredCone(0.1, 0.85, 12), coreMaterial);
-  core.position.copy(exhaustDirection).multiplyScalar(0.025);
-  core.quaternion.setFromUnitVectors(UP, exhaustDirection);
-  core.scale.set(0.04, 0.04, 0.04);
-  group.add(core);
   exhaustRoot.add(group);
-  return { group, aperture, plume, core, direction: exhaustDirection.clone(), power: 0, channel, side: Math.sign(position[0]) || 0 };
+  return { group, aperture, direction: exhaustDirection.clone(), power: 0, channel, side: Math.sign(position[0]) || 0 };
 }
 
-for (const x of [-0.72, -0.24, 0.24, 0.72]) effects.rear.push(createJet([x, 0.22, 2.14], new THREE.Vector3(0, 0, 1), 0xffc979, 0.9, 'rear'));
+for (const x of [-0.72, -0.24, 0.24, 0.72]) effects.rear.push(createJet([x, 0.22, 2.14], new THREE.Vector3(0, 0, 1), 0.9, 'rear'));
 for (const x of [-0.68, 0.68]) {
-  for (const z of [-1.2, 1.2]) effects.lift.push(createJet([x, -0.58, z], new THREE.Vector3(0, -1, 0), 0xf2f0e8, 0.88, 'lift'));
+  for (const z of [-1.2, 1.2]) effects.lift.push(createJet([x, -0.58, z], new THREE.Vector3(0, -1, 0), 0.88, 'lift'));
 }
-effects.rcs.push(createJet([-0.98, 0.04, 0.7], new THREE.Vector3(-1, 0, 0), 0xffa45d, 0.78, 'yaw'));
-effects.rcs.push(createJet([0.98, 0.04, 0.7], new THREE.Vector3(1, 0, 0), 0xffa45d, 0.78, 'yaw'));
-effects.rcs.push(createJet([-0.98, 0.04, -0.7], new THREE.Vector3(-1, 0, 0), 0xffd08a, 0.78, 'roll'));
-effects.rcs.push(createJet([0.98, 0.04, -0.7], new THREE.Vector3(1, 0, 0), 0xffd08a, 0.78, 'roll'));
+effects.rcs.push(createJet([-0.98, 0.04, 0.7], new THREE.Vector3(-1, 0, 0), 0.78, 'yaw'));
+effects.rcs.push(createJet([0.98, 0.04, 0.7], new THREE.Vector3(1, 0, 0), 0.78, 'yaw'));
+effects.rcs.push(createJet([-0.98, 0.04, -0.7], new THREE.Vector3(-1, 0, 0), 0.78, 'roll'));
+effects.rcs.push(createJet([0.98, 0.04, -0.7], new THREE.Vector3(1, 0, 0), 0.78, 'roll'));
 
 const airReleasePools = [];
 const visualPressure = { rear: 0, lift: 0, rcs: 0 };
+const smokeTexture = new THREE.TextureLoader().load('/textures/smoke-atlas.png');
+smokeTexture.colorSpace = THREE.SRGBColorSpace;
 
 function createAirReleasePool(name, capacity) {
-  const pool = createPressureSmoke(airReleaseRoot, name, capacity);
+  const pool = createPressureSmoke(airReleaseRoot, name, capacity, smokeTexture);
   airReleasePools.push(pool);
   return pool;
 }
@@ -1060,6 +1241,8 @@ function clearAirReleaseParticles() {
 
 function smokeGroundHeight(x, z) {
   if (activeTrack === 1) return z > 37 && z < 75 ? 0.06 : -0.04;
+  if (activeTrack === 3) return -0.04;
+  if (Math.abs(x) < 10 && z < STUNT_RAMP.startZ - 20 && z >= STUNT_BOUNDS.minZ) return STUNT_RAMP.surfaceY;
   return Math.abs(x) < 10 && z > STUNT_RAMP.startZ && z < 95 ? STUNT_RAMP.surfaceY : -0.04;
 }
 
@@ -1068,7 +1251,6 @@ const airLiftPool = createAirReleasePool('lift', 360);
 const airRcsPool = createAirReleasePool('rcs', 72);
 
 loadStatus.textContent = 'Loading the flight hardware...';
-window.setTimeout(() => loadingScreen.classList.add('hidden'), 20000);
 
 function disposeModel(model) {
   if (!model) return;
@@ -1149,9 +1331,9 @@ function finalizeCarModel(model, carId, token) {
   exhaustRoot.rotation.set(0, 0, 0);
   exhaustRoot.position.set(0, 0, 0);
   document.querySelector('#car-select').value = carId;
-  loadBar.style.width = '100%';
-  loadStatus.textContent = `${CAR_OPTIONS[carId].label} online.`;
-  loadingScreen.classList.add('hidden');
+  loadBar.style.width = '96%';
+  loadStatus.textContent = `${CAR_OPTIONS[carId].label} online. Finalizing cinematic boot...`;
+  modelReady = true;
   resetRun(false);
   showToastMessage(`${CAR_OPTIONS[carId].label} LOADED / VEHICLE RESET`);
 }
@@ -1174,7 +1356,7 @@ function loadCarModel(carId = '2020') {
     }, undefined, () => {
       if (token !== carLoadToken) return;
       loadStatus.textContent = `${option.label} unavailable — training chassis active.`;
-      loadingScreen.classList.add('hidden');
+      modelReady = true;
       showToastMessage(`${option.label} FAILED TO LOAD`);
     });
     return;
@@ -1188,13 +1370,17 @@ function loadCarModel(carId = '2020') {
   }, () => {
     if (token !== carLoadToken) return;
     loadStatus.textContent = `${option.label} unavailable — training chassis active.`;
-    loadingScreen.classList.add('hidden');
+    modelReady = true;
     showToastMessage(`${option.label} FAILED TO LOAD`);
   });
 }
 
 const requestedCar = new URLSearchParams(window.location.search).get('car');
 loadCarModel(CAR_OPTIONS[requestedCar] ? requestedCar : '2020');
+rebuildStuntFormation();
+loadStuntVehicleModels();
+loadingVideo?.play().catch(() => {});
+requestAnimationFrame(updateLoadingProgress);
 
 function flatTerrain(height, name = 'ROAD') {
   return { hasSurface: true, height, normal: tmp.surfaceNormal.set(0, 1, 0), tangent: tmp.surfaceTangent.copy(FORWARD), name, type: 'ground', surfaceZ: null };
@@ -1274,6 +1460,10 @@ function getTrackTwoTerrain(x, z) {
     return info;
   }
 
+  if (insideRamp && z < startZ - 20 && z >= STUNT_BOUNDS.minZ) {
+    return flatTerrain(surfaceY, 'BACKSIDE RUNOUT');
+  }
+
   if (z > startZ) return flatTerrain(surfaceY, 'RUNWAY');
 
   if (Math.abs(x) <= STUNT_BOUNDS.halfWidth && z >= STUNT_BOUNDS.minZ && z <= STUNT_BOUNDS.maxZ) {
@@ -1282,13 +1472,11 @@ function getTrackTwoTerrain(x, z) {
   return noTerrain('OUT OF ARENA');
 }
 
-function rampTerrain(x, z, startZ, endZ, startHeight, endHeight, name) {
-  const length = Math.abs(startZ - endZ);
-  const t = THREE.MathUtils.clamp(Math.abs(startZ - z) / length, 0, 1);
-  const eased = t * t * (3 - 2 * t);
-  const height = THREE.MathUtils.lerp(startHeight, endHeight, eased);
-  const slope = (endHeight - startHeight) * (6 * t * (1 - t)) / length;
-  return { hasSurface: true, height, normal: tmp.surfaceNormal.set(0, 1, -slope).normalize(), name };
+function getTrackThreeTerrain(x, z) {
+  if (Math.abs(x) <= STUNT_JUMP_BOUNDS.halfWidth && z >= STUNT_JUMP_BOUNDS.minZ && z <= STUNT_JUMP_BOUNDS.maxZ) {
+    return flatTerrain(-0.04, 'SIX-LANE HIGHWAY');
+  }
+  return noTerrain('OUT OF STUNT RUN');
 }
 
 function wallRideTerrain(z) {
@@ -1324,11 +1512,15 @@ function openHalfPipeTerrain(x, z, xOffset, radius, name) {
 }
 
 function getTerrainInfo(x, z) {
-  return activeTrack === 2 ? getTrackTwoTerrain(x, z) : getTrackOneTerrain(x, z);
+  if (activeTrack === 2) return getTrackTwoTerrain(x, z);
+  if (activeTrack === 3) return getTrackThreeTerrain(x, z);
+  return getTrackOneTerrain(x, z);
 }
 
 function getRoadHalfWidth(z) {
-  return activeTrack === 2 ? STUNT_BOUNDS.halfWidth : HIGHWAY_BOUNDS.halfWidth;
+  if (activeTrack === 2) return STUNT_BOUNDS.halfWidth;
+  if (activeTrack === 3) return STUNT_JUMP_BOUNDS.halfWidth;
+  return HIGHWAY_BOUNDS.halfWidth;
 }
 
 function keepVehicleOnRoad() {
@@ -1341,7 +1533,7 @@ function keepVehicleOnRoad() {
     if (physics.velocity.x < 0) physics.velocity.x = 0;
   }
 
-  const bounds = activeTrack === 2 ? STUNT_BOUNDS : HIGHWAY_BOUNDS;
+  const bounds = activeTrack === 2 ? STUNT_BOUNDS : activeTrack === 3 ? STUNT_JUMP_BOUNDS : HIGHWAY_BOUNDS;
   if (physics.position.z < bounds.minZ) {
     physics.position.z = bounds.minZ;
     if (physics.velocity.z < 0) physics.velocity.z = 0;
@@ -1408,7 +1600,8 @@ function resetRun(showToast = true) {
   physics.rampTheta = 0;
   physics.spinActive = false;
   physics.spinDirection = 0;
-  physics.spinAngle = 0;
+  physics.spinElapsed = 0;
+  physics.spinPlan = null;
   clearAirReleaseParticles();
   if (showToast) showToastMessage('RUN RESET / AIR RESERVE RESTORED');
 }
@@ -1417,18 +1610,21 @@ function startSingleSpin(direction) {
   if (paused || helpOpen || physics.wheelContact || physics.air <= 0 || physics.spinActive) return;
   physics.spinActive = true;
   physics.spinDirection = direction < 0 ? -1 : 1;
-  physics.spinAngle = 0;
+  physics.spinElapsed = 0;
+  physics.spinPlan = createSpinPlan(physics.quaternion, physics.spinDirection, settings.spinSensitivity);
   physics.angularVelocity.set(0, 0, 0);
-  showToastMessage(`${physics.spinDirection < 0 ? 'LEFT' : 'RIGHT'} SPIN / 360°`);
+  autoSpiral = false;
+  showToastMessage(`${physics.spinDirection < 0 ? 'LEFT' : 'RIGHT'} SPIN / WHEELS-DOWN RECOVERY`);
 }
 
 function stopSingleSpin(completed = false) {
   const direction = physics.spinDirection;
   physics.spinActive = false;
   physics.spinDirection = 0;
-  physics.spinAngle = 0;
+  physics.spinElapsed = 0;
+  physics.spinPlan = null;
   physics.angularVelocity.set(0, 0, 0);
-  if (completed) showToastMessage(`${direction < 0 ? 'LEFT' : 'RIGHT'} SPIN COMPLETE`);
+  if (completed) showToastMessage(`${direction < 0 ? 'LEFT' : 'RIGHT'} SPIN COMPLETE / WHEELS DOWN`);
 }
 
 function updateSingleSpin(dt) {
@@ -1438,29 +1634,32 @@ function updateSingleSpin(dt) {
     return;
   }
 
-  const remaining = TAU - physics.spinAngle;
-  const step = Math.min(SINGLE_SPIN_RATE * dt, remaining);
-  tmp.spinAxis.copy(FORWARD).applyQuaternion(physics.quaternion).normalize();
-  tmp.spinDelta.setFromAxisAngle(tmp.spinAxis, physics.spinDirection * step);
-  physics.quaternion.premultiply(tmp.spinDelta).normalize();
-  physics.spinAngle += step;
+  physics.spinElapsed += dt;
+  if (sampleSpin(physics.spinPlan, physics.spinElapsed, physics.quaternion)) stopSingleSpin(true);
+}
 
-  if (physics.spinAngle >= TAU - 0.000001) stopSingleSpin(true);
+function stabilizeAirborneVehicle(dt) {
+  if (!settings.stabilizeInAir || physics.wheelContact || physics.spinActive) return;
+  tmp.forward.copy(FORWARD).applyQuaternion(physics.quaternion).normalize();
+  tmp.flatForward.copy(tmp.forward).setY(0);
+  if (tmp.flatForward.lengthSq() < 0.001) return;
+  tmp.flatForward.normalize();
+  const zAxis = tmp.flatForward.clone().negate();
+  const xAxis = UP.clone().cross(zAxis).normalize();
+  tmp.desiredQuaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAxis, UP, zAxis));
+  physics.quaternion.slerp(tmp.desiredQuaternion, Math.min(1, dt * (3.5 + settings.steeringSensitivity * 4)));
 }
 
 function updateInput() {
-  const driveForward = (keys.has('KeyW') || keys.has('ArrowUp')) ? 1 : 0;
-  const driveReverse = (keys.has('KeyS') || (physics.wheelContact && keys.has('ArrowDown'))) ? 1 : 0;
-  input.drive = driveForward - driveReverse;
-  input.steer = (keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0);
-  input.rear = keys.has('ArrowUp') ? 1 : 0;
-  input.lift = keys.has('Space') || (!physics.wheelContact && keys.has('ArrowDown')) ? 1 : 0;
-  input.yaw = (keys.has('ArrowRight') ? 1 : 0) - (keys.has('ArrowLeft') ? 1 : 0);
-  // Q/E are edge-triggered one-shot spins, not continuous roll controls.
-  input.roll = 0;
-  input.pitch = 0;
-  input.spiral = (keys.has('KeyX') ? 1 : 0) - (keys.has('KeyZ') ? 1 : 0);
-  input.boost = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 1 : 0;
+  readControls(keys, input);
+  input.rear = Math.max(input.rear, settings.autoThrust && !physics.wheelContact ? 1 : 0);
+  if (settings.gyroEnabled && gyro.active) {
+    const gyroSteer = THREE.MathUtils.clamp(gyro.gamma / 28, -1, 1) * settings.gyroSensitivity;
+    const gyroPitch = THREE.MathUtils.clamp((gyro.beta - 45) / 30, -1, 1) * settings.gyroSensitivity;
+    if (physics.wheelContact) input.steer = THREE.MathUtils.clamp(input.steer + gyroSteer, -1, 1);
+    else input.yaw = THREE.MathUtils.clamp(input.yaw + gyroSteer, -1, 1);
+    input.pitch = gyroPitch;
+  }
 }
 
 function updatePhysicsStep(dt) {
@@ -1473,10 +1672,10 @@ function updatePhysicsStep(dt) {
 
   // Apply ground steering directly to both heading and travel velocity. The
   // previous torque-only steering was heavily damped by the contact solver,
-  // so A/D could animate the nose without producing a useful road turn.
+  // so steering could animate the nose without producing a useful road turn.
   if (physics.wheelContact && terrain.hasSurface && input.steer !== 0) {
     const groundSpeed = Math.abs(physics.velocity.dot(tmp.forward));
-    const steeringRate = THREE.MathUtils.lerp(1.25, 2.45, THREE.MathUtils.clamp(groundSpeed / 18, 0, 1));
+    const steeringRate = THREE.MathUtils.lerp(1.25, 2.45, THREE.MathUtils.clamp(groundSpeed / 18, 0, 1)) * settings.steeringSensitivity;
     const steerAngle = input.steer * steeringRate * dt;
     tmp.steerDelta.setFromAxisAngle(terrain.normal, steerAngle);
     physics.quaternion.premultiply(tmp.steerDelta).normalize();
@@ -1486,9 +1685,9 @@ function updatePhysicsStep(dt) {
     tmp.right.copy(RIGHT).applyQuaternion(physics.quaternion).normalize();
   }
 
-  const rearPower = input.rear * (input.boost ? 102000 : 68000);
-  const liftPower = input.lift * 33000;
-  const manualSpiral = !physics.wheelContact && input.spiral;
+  const rearPower = input.rear * (input.boost ? 102000 : 68000) * settings.thrustSensitivity;
+  const liftPower = input.lift * 33000 * settings.thrustSensitivity;
+  const manualSpiral = !physics.wheelContact && input.spiral * settings.spiralSensitivity;
   const assistedSpiral = !physics.wheelContact && autoSpiral ? 1 : 0;
   const airYaw = input.yaw;
   const spinRcs = physics.spinActive ? 0.85 : 0;
@@ -1496,7 +1695,7 @@ function updatePhysicsStep(dt) {
   const rearForce = tmp.forward.clone().multiplyScalar(rearPower);
   if (physics.air > 0 && input.rear > 0) applyForce(rearForce, new THREE.Vector3(0, 0, 1.4), dt);
 
-  let driveDirection = terrain.type === 'ramp' || terrain.type === 'deck'
+  let driveDirection = terrain.type === 'ramp' || terrain.type === 'jump-ramp' || terrain.type === 'deck'
     ? terrain.tangent.clone()
     : tmp.forward.clone().projectOnPlane(terrain.normal);
   if (driveDirection.lengthSq() < 0.001) driveDirection.copy(tmp.forward).setY(0);
@@ -1505,24 +1704,24 @@ function updatePhysicsStep(dt) {
 
   if (physics.wheelContact && terrain.hasSurface && input.drive !== 0) {
     const groundVelocity = physics.velocity.dot(driveDirection);
-    const targetSpeed = input.drive > 0 ? (input.boost ? 300 : 220) / 3.6 : -65 / 3.6;
+    const targetSpeed = input.drive > 0 ? ((input.boost ? 300 : 220) * settings.speedControl) / 3.6 : (-65 * settings.speedControl) / 3.6;
     const desiredAcceleration = THREE.MathUtils.clamp((targetSpeed - groundVelocity) * 4.2, -48, 42);
     applyForce(driveDirection.clone().multiplyScalar(physics.mass * desiredAcceleration), ZERO, dt);
   }
 
   if (liftPower > 0 && physics.air > 0) applyForce(tmp.up.clone().multiplyScalar(liftPower), new THREE.Vector3(0, -0.42, 0), dt);
   if (rcsPower > 0 && physics.air > 0) {
-    // Left/right arrows rotate the heading (yaw) in both modes. They no
+    // A/D rotate the heading (yaw) in both modes. They no
     // longer use the forward axis, which was a barrel-roll and looked like a
     // loss of control rather than left/right rotation.
     const yawAxis = physics.wheelContact && terrain.hasSurface ? terrain.normal : tmp.up;
-    physics.angularVelocity.addScaledVector(yawAxis, airYaw * (physics.wheelContact ? 2.6 : 4.2) * dt);
+    physics.angularVelocity.addScaledVector(yawAxis, airYaw * (physics.wheelContact ? 2.6 : 4.2) * settings.steeringSensitivity * dt);
   }
 
   if (!physics.wheelContact && rcsPower > 0 && physics.air > 0 && !physics.spinActive) {
     const spiralRoll = input.roll + manualSpiral * 1.65 + assistedSpiral * 0.95;
-    physics.angularVelocity.addScaledVector(tmp.forward, spiralRoll * 4.2 * dt);
-    physics.angularVelocity.addScaledVector(tmp.right, input.pitch * 1.2 * dt);
+    physics.angularVelocity.addScaledVector(tmp.forward, spiralRoll * 4.2 * settings.spiralSensitivity * dt);
+    physics.angularVelocity.addScaledVector(tmp.right, input.pitch * 1.2 * settings.gyroSensitivity * dt);
   }
 
   const gravity = new THREE.Vector3(0, -9.81 * physics.mass, 0);
@@ -1538,7 +1737,7 @@ function updatePhysicsStep(dt) {
   applyForce(drag, ZERO, dt);
 
   if (physics.wheelContact && terrain.hasSurface) {
-    if (terrain.type === 'ramp' || terrain.type === 'deck') {
+    if (terrain.type === 'ramp' || terrain.type === 'jump-ramp' || terrain.type === 'deck') {
       tmp.flatForward.copy(terrain.tangent).normalize();
     } else {
       tmp.flatForward.copy(tmp.forward).projectOnPlane(terrain.normal).normalize();
@@ -1546,7 +1745,7 @@ function updatePhysicsStep(dt) {
     const longitudinal = physics.velocity.dot(tmp.flatForward);
     tmp.lateralVelocity.copy(physics.velocity).addScaledVector(tmp.flatForward, -longitudinal);
     physics.velocity.addScaledVector(tmp.lateralVelocity, -Math.min(1, dt * 8));
-    const rollingResistance = Math.abs(input.drive) > 0.01 ? 0.35 : 2.4;
+    const rollingResistance = Math.abs(input.drive) > 0.01 || input.rear > 0 ? 0.35 : 2.4;
     const groundDamping = Math.exp(-rollingResistance * dt);
     physics.velocity.multiplyScalar(groundDamping);
   }
@@ -1579,7 +1778,7 @@ function updatePhysicsStep(dt) {
   physics.velocity.y = THREE.MathUtils.clamp(physics.velocity.y, -54, 66);
   physics.velocity.x = THREE.MathUtils.clamp(physics.velocity.x, -95, 95);
   physics.velocity.z = THREE.MathUtils.clamp(physics.velocity.z, -95, 95);
-  const maximumSpeed = physics.wheelContact ? (input.boost ? 84 : 64) : 92;
+  const maximumSpeed = (physics.wheelContact ? (input.boost ? 84 : 64) : 92) * settings.speedControl;
   if (physics.velocity.length() > maximumSpeed) physics.velocity.setLength(maximumSpeed);
   physics.position.addScaledVector(physics.velocity, dt);
   keepVehicleOnRoad();
@@ -1589,6 +1788,7 @@ function updatePhysicsStep(dt) {
   if (physics.spinActive) physics.angularVelocity.set(0, 0, 0);
   rotateByAngularVelocity(dt);
   updateSingleSpin(dt);
+  stabilizeAirborneVehicle(dt);
 
   const contactZ = contactTerrain.surfaceZ ?? physics.position.z;
   const surfacePoint = tmp.worldPoint.set(physics.position.x, contactTerrain.height, contactZ);
@@ -1596,7 +1796,7 @@ function updatePhysicsStep(dt) {
   let surfaceDistance = physics.position.clone().sub(surfacePoint).dot(contactTerrain.normal);
   const previousSurfaceDistance = tmp.previousSurfaceDelta.copy(tmp.previousPosition).sub(surfacePoint).dot(contactTerrain.normal);
   const wasWheelContact = physics.wheelContact;
-  const surfaceIsReachable = contactTerrain.type === 'ramp'
+  const surfaceIsReachable = contactTerrain.type === 'ramp' || contactTerrain.type === 'jump-ramp'
     ? surfaceDistance >= -RAMP_CONTACT_MARGIN
     : contactTerrain.type === 'ground'
       ? surfaceDistance >= -GROUND_LOCK_DISTANCE
@@ -1604,7 +1804,7 @@ function updatePhysicsStep(dt) {
   // The deck query is already height-gated, so an upward-moving car may
   // legitimately contact it at the end of the return arc. Rejecting positive
   // vertical velocity here made the car strike and fall through the landing.
-  const rampRecovery = contactTerrain.type === 'ramp' && wasWheelContact;
+  const rampRecovery = (contactTerrain.type === 'ramp' || contactTerrain.type === 'jump-ramp') && wasWheelContact;
   // If the car was already driving on a flat road, keep it locked to that
   // road for a few metres of tolerance. This catches a substep that would
   // otherwise leave the chassis inside the road or make it hover after a
@@ -1825,39 +2025,26 @@ function silenceAudio() {
 }
 
 function updateJet(jet, power) {
-  const value = THREE.MathUtils.clamp(power, 0, 1);
-  jet.power = value;
-  const active = value > 0.02;
-  jet.plume.material.opacity = active ? 0.08 + value * 0.2 : 0;
-  jet.core.material.opacity = active ? 0.14 + value * 0.25 : 0;
-  jet.plume.visible = active;
-  jet.core.visible = active;
-  const length = value * (jet.channel === 'rear' ? (input.boost ? 1.5 : 1.22) : jet.channel === 'lift' ? 1.35 : 1.08);
-  const width = 0.55 + value * 0.8;
-  jet.plume.scale.set(width, length, width);
-  jet.core.scale.set(0.78, value, 0.78);
+  jet.power = THREE.MathUtils.clamp(power, 0, 1);
 }
 
 function emitAirReleaseFromJets(pool, jets, pressure, rate, dt, boost = false) {
-  const budget = renderQuality === 'low' ? 0.6 : 1;
-  pool.spawnAccumulator += pressure * rate * budget * dt;
+  const emissionRate = pressure * rate;
+  pool.spawnAccumulator += emissionRate * dt;
   let emitted = 0;
   while (pool.spawnAccumulator >= 1 && emitted < 12) {
     pool.spawnAccumulator -= 1;
     let jet = jets[pool.nextJet++ % jets.length];
     if (jets.length > 1 && jet.power <= 0.02) jet = jets.find((candidate) => candidate.power > 0.02) ?? jet;
-    pool.emit(jet, Math.max(pressure, jet.power), physics, boost);
+    const ageOffset = Math.min(dt, pool.spawnAccumulator / Math.max(emissionRate, 1));
+    pool.emit(jet, Math.max(pressure, jet.power), physics, boost, ageOffset);
     emitted += 1;
   }
 }
 
 function updateEffects(dt) {
   const reservoir = THREE.MathUtils.clamp(physics.air / 18, 0, 1);
-  // Keep a visible low-pressure vapor trail while the car is accelerating on
-  // the road, even when W is using the ground motor rather than ArrowUp's
-  // dedicated rear-thruster force. Full rear/boost thrust still dominates it.
-  const driveVapor = physics.wheelContact && input.drive > 0 ? 0.5 : 0;
-  const rearDemand = Math.max(driveVapor, input.rear * (input.boost ? 1 : 0.82)) * reservoir;
+  const rearDemand = input.rear * (input.boost ? 1 : 0.82) * reservoir;
   const liftDemand = input.lift * reservoir;
   const spiral = !physics.wheelContact ? (Math.abs(input.spiral) + (autoSpiral ? 0.75 : 0)) * reservoir : 0;
   const rcsDemand = Math.min(1, Math.abs(input.yaw) + Math.abs(input.pitch) + spiral * 0.7 + (physics.spinActive ? 0.85 : 0)) * reservoir;
@@ -1876,7 +2063,7 @@ function updateEffects(dt) {
     emitAirReleaseFromJets(airRearPool, effects.rear, visualPressure.rear, input.boost ? 130 : 100, dt, input.boost);
     emitAirReleaseFromJets(airLiftPool, effects.lift, visualPressure.lift, 240, dt);
     emitAirReleaseFromJets(airRcsPool, effects.rcs, visualPressure.rcs, 48, dt);
-    airReleasePools.forEach((pool) => pool.update(dt, smokeGroundHeight, canvas.height));
+    airReleasePools.forEach((pool) => pool.update(dt, smokeGroundHeight));
   }
   updateAudio(visualPressure.rear * (input.boost ? 118000 : 76000), visualPressure.lift * 33000, visualPressure.rcs);
   cameraShake = Math.max(0, cameraShake - dt * 2.9);
@@ -1968,8 +2155,16 @@ function updateHUD(dt) {
   const hudTerrain = getTerrainInfo(physics.position.x, physics.position.z);
   const altitude = Math.max(0, physics.position.y - (hudTerrain.hasSurface ? hudTerrain.height : 0) - vehicleSupportOffset);
   const status = physics.airborneTime > 0.4 ? 'AIRBORNE / CONTROL ACTIVE' : physics.wheelContact ? 'SYSTEMS NOMINAL' : 'FREE VECTOR';
-  const mission = activeTrack === 2 ? (physics.airborneTime > 0.1 ? (autoSpiral ? 'AUTO SPIRAL ACTIVE' : hudTerrain.name) : hudTerrain.name) : (physics.launchPeak > 18 ? 'VECTOR UNLOCKED' : physics.airborneTime > 0.1 ? (autoSpiral ? 'AUTO SPIRAL ACTIVE' : 'AIRBORNE — STABILIZE') : physics.position.z < -50 ? 'APPROACH RAMP' : 'READY TO DRIVE');
-  const progress = activeTrack === 2 ? THREE.MathUtils.clamp((46 - physics.position.z) / 246 * 100, 0, 100) : THREE.MathUtils.clamp(Math.max(physics.position.z < -40 ? (40 - physics.position.z) / 72 : 0, physics.launchPeak / 27) * 100, 0, 100);
+  const mission = activeTrack === 2
+    ? (physics.airborneTime > 0.1 ? (autoSpiral ? 'AUTO SPIRAL ACTIVE' : hudTerrain.name) : hudTerrain.name)
+    : activeTrack === 3
+      ? (physics.airborneTime > 0.1 ? (autoSpiral ? 'AUTO SPIRAL ACTIVE' : 'PARKED LINE / AIRBORNE') : physics.position.z > STUNT_JUMP_ROAD.targetZ + 36 ? 'APPROACH PARKED VEHICLES' : 'PARKED VEHICLE LINE')
+      : (physics.launchPeak > 18 ? 'VECTOR UNLOCKED' : physics.airborneTime > 0.1 ? (autoSpiral ? 'AUTO SPIRAL ACTIVE' : 'AIRBORNE — STABILIZE') : physics.position.z < -50 ? 'APPROACH RAMP' : 'READY TO DRIVE');
+  const progress = activeTrack === 2
+    ? THREE.MathUtils.clamp((46 - physics.position.z) / 246 * 100, 0, 100)
+    : activeTrack === 3
+      ? THREE.MathUtils.clamp((46 - physics.position.z) / 188 * 100, 0, 100)
+      : THREE.MathUtils.clamp(Math.max(physics.position.z < -40 ? (40 - physics.position.z) / 72 : 0, physics.launchPeak / 27) * 100, 0, 100);
 
   document.querySelector('#speed-readout').textContent = String(Math.round(speed)).padStart(3, '0');
   document.querySelector('#speed-state').textContent = speed > 125 ? 'REDLINE' : speed > 60 ? 'VECTORING' : speed > 2 ? 'ROLLING' : 'IDLE';
@@ -1992,11 +2187,15 @@ function updateHUD(dt) {
   document.querySelector('#camera-lock-button').title = cameraSteerLock ? 'Camera heading locked' : 'Camera follows vehicle heading';
   document.querySelector('#camera-select').value = cameraAngle;
   document.querySelector('#spiral-button').classList.toggle('active', autoSpiral);
-  document.querySelector('#track-button').classList.toggle('active', activeTrack === 2);
-  document.querySelector('#track-button').title = activeTrack === 1 ? 'Switch to Stunt Vector track' : 'Switch to Road 01';
+  document.querySelector('#track-button').classList.toggle('active', activeTrack !== 1);
+  document.querySelector('#track-button').title = activeTrack === 1 ? 'Switch to Track 02 / Stunt Vector' : activeTrack === 2 ? 'Switch to Track 03 / Linear Park' : 'Switch to Road 01';
   document.querySelector('#traffic-button').classList.toggle('active', trafficVisible);
   document.querySelector('#vacuum-button').classList.toggle('active', vacuumEnabled);
   document.querySelector('#vacuum-button').title = vacuumEnabled ? 'Vacuum ON — release with V' : 'Vacuum OFF — press V to stick to surfaces';
+  document.querySelector('#stabilize-button').classList.toggle('active', settings.stabilizeInAir);
+  document.querySelector('#stabilize-button').title = `Air stabilization ${settings.stabilizeInAir ? 'on' : 'off'}`;
+  document.querySelector('#auto-thrust-button').classList.toggle('active', settings.autoThrust);
+  document.querySelector('#auto-thrust-button').title = `Auto thrust ${settings.autoThrust ? 'on' : 'off'}`;
 }
 
 function applyTheme(nextTheme, announce = true) {
@@ -2086,20 +2285,22 @@ function setCameraAngle(angle, announce = true) {
 }
 
 function setTrackMode(mode) {
-  const nextTrack = Number(mode) === 2 ? 2 : 1;
+  const numericMode = Number(mode);
+  const nextTrack = numericMode === 2 || numericMode === 3 ? numericMode : 1;
   activeTrack = nextTrack;
   trackOneRoot.visible = activeTrack === 1;
   trackTwoRoot.visible = activeTrack === 2;
+  trackThreeRoot.visible = activeTrack === 3;
   trafficRoot.visible = trafficVisible && activeTrack === 1;
   keys.clear();
   clearInput();
   setCameraAngle('rear', false);
   resetRun(false);
-  showToastMessage(activeTrack === 1 ? 'ROAD 01 / VERTICAL VECTOR ONLINE' : 'TRACK 02 / STUNT VECTOR ONLINE');
+  showToastMessage(activeTrack === 1 ? 'ROAD 01 / VERTICAL VECTOR ONLINE' : activeTrack === 2 ? 'TRACK 02 / STUNT VECTOR ONLINE' : 'TRACK 03 / LINEAR PARK ONLINE');
 }
 
 function toggleTrack() {
-  setTrackMode(activeTrack === 1 ? 2 : 1);
+  setTrackMode(activeTrack === 3 ? 1 : activeTrack + 1);
 }
 
 function toggleTraffic(force) {
@@ -2130,12 +2331,113 @@ function toggleHeadlights() {
   showToastMessage(`HEADLIGHTS ${vehicleLights.enabled ? 'ON' : 'OFF'}`);
 }
 
-function applyRenderQuality() {
-  renderer.setPixelRatio(pixelRatioFor(window.innerWidth, window.innerHeight, window.devicePixelRatio,
-    renderQuality, renderQuality === 'auto' ? adaptiveResolution.scale : 1));
-  const button = document.querySelector('#quality-button');
-  button.textContent = renderQuality === 'balanced' ? 'BAL' : renderQuality.toUpperCase();
-  button.title = `Rendering quality: ${renderQuality}. Click to change.`;
+function renderSettings() {
+  Object.keys(SETTING_RANGES).forEach((key) => {
+    const inputElement = document.querySelector(`#${key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`);
+    const output = document.querySelector(`#${key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}-value`);
+    if (!inputElement || !output) return;
+    inputElement.value = settings[key];
+    output.value = formatSettingValue(key, settings[key]);
+    output.textContent = formatSettingValue(key, settings[key]);
+  });
+  ['stabilizeInAir', 'autoThrust', 'gyroEnabled'].forEach((key) => {
+    const element = document.querySelector(`#${key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`);
+    if (element) element.checked = settings[key];
+  });
+}
+
+function toggleSettings(force) {
+  settingsOpen = typeof force === 'boolean' ? force : !settingsOpen;
+  paused = settingsOpen;
+  const overlay = document.querySelector('#settings-overlay');
+  overlay.classList.toggle('open', settingsOpen);
+  overlay.setAttribute('aria-hidden', String(!settingsOpen));
+  if (settingsOpen) {
+    keys.clear(); clearInput(); renderSettings();
+  } else {
+    settings = saveSettings(settings);
+  }
+}
+
+async function enableGyroscope() {
+  try {
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      const permission = await DeviceOrientationEvent.requestPermission();
+      gyroPermissionGranted = permission === 'granted';
+    } else gyroPermissionGranted = true;
+    if (gyroPermissionGranted) {
+      settings.gyroEnabled = true;
+      renderSettings();
+      showToastMessage('GYROSCOPE ONLINE / TILT TO CONTROL');
+    } else showToastMessage('GYROSCOPE PERMISSION DENIED');
+  } catch {
+    showToastMessage('GYROSCOPE UNAVAILABLE ON THIS DEVICE');
+  }
+}
+
+function settingId(key) {
+  return key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+}
+
+Object.keys(SETTING_RANGES).forEach((key) => {
+  const element = document.querySelector(`#${settingId(key)}`);
+  element?.addEventListener('input', () => {
+    settings[key] = Number(element.value);
+    settings = saveSettings(settings);
+    renderSettings();
+    if (key === 'stuntVehicleCount' || key === 'stuntVehicleSpacing') rebuildStuntFormation();
+  });
+});
+['stabilizeInAir', 'autoThrust', 'gyroEnabled'].forEach((key) => {
+  document.querySelector(`#${settingId(key)}`)?.addEventListener('change', (event) => {
+    settings[key] = event.target.checked;
+    settings = saveSettings(settings);
+    if (key === 'gyroEnabled' && settings.gyroEnabled && !gyroPermissionGranted) enableGyroscope();
+  });
+});
+document.querySelector('#settings-button').addEventListener('click', () => toggleSettings());
+document.querySelector('#stabilize-button').addEventListener('click', () => {
+  settings.stabilizeInAir = !settings.stabilizeInAir;
+  settings = saveSettings(settings);
+  renderSettings();
+  showToastMessage(`AIR STABILIZATION ${settings.stabilizeInAir ? 'ON' : 'OFF'}`);
+});
+document.querySelector('#auto-thrust-button').addEventListener('click', () => {
+  settings.autoThrust = !settings.autoThrust;
+  settings = saveSettings(settings);
+  renderSettings();
+  showToastMessage(`AUTO THRUST ${settings.autoThrust ? 'ON' : 'OFF'}`);
+});
+document.querySelector('#close-settings').addEventListener('click', () => toggleSettings(false));
+document.querySelector('#close-settings-button').addEventListener('click', () => toggleSettings(false));
+document.querySelector('#reset-settings').addEventListener('click', () => {
+  settings = saveSettings({ ...DEFAULT_SETTINGS });
+  renderSettings();
+  rebuildStuntFormation();
+  showToastMessage('CONTROL SETTINGS RESET');
+});
+document.querySelector('#gyro-permission').addEventListener('click', enableGyroscope);
+renderSettings();
+
+window.addEventListener('deviceorientation', (event) => {
+  if (!Number.isFinite(event.beta) || !Number.isFinite(event.gamma)) return;
+  gyro.beta = event.beta;
+  gyro.gamma = event.gamma;
+  gyro.active = true;
+});
+
+function updateLoadingProgress() {
+  const elapsed = performance.now() - loadingStartedAt;
+  const cinematicProgress = THREE.MathUtils.clamp(elapsed / 5600, 0, 1);
+  const videoProgress = loadingVideo?.duration ? THREE.MathUtils.clamp(loadingVideo.currentTime / loadingVideo.duration, 0, 1) : cinematicProgress;
+  loadBar.style.width = `${Math.round(Math.max(cinematicProgress, videoProgress * 0.92) * 100)}%`;
+  if (!modelReady) loadStatus.textContent = `Loading flight hardware ${Math.round(Math.max(cinematicProgress, videoProgress * 0.92) * 100)}%...`;
+  if (modelReady && elapsed >= 5600) {
+    loadBar.style.width = '100%';
+    loadStatus.textContent = 'Flight deck ready.';
+    loadingScreen.classList.add('hidden');
+    loadingVideo?.pause();
+  } else requestAnimationFrame(updateLoadingProgress);
 }
 
 window.addEventListener('keydown', (event) => {
@@ -2144,6 +2446,7 @@ window.addEventListener('keydown', (event) => {
   initAudio();
   if (!event.repeat) {
     if (event.code === 'KeyH') toggleHelp();
+    if (event.code === 'KeyG') toggleSettings();
     if (event.code === 'KeyP' || event.code === 'Escape') togglePause();
     if (event.code === 'KeyT') applyTheme(theme === 'night' ? 'day' : 'night');
     if (event.code === 'KeyR') resetRun();
@@ -2151,7 +2454,8 @@ window.addEventListener('keydown', (event) => {
     if (event.code === 'KeyC') cycleCamera();
     if (event.code === 'KeyV') toggleVacuum();
     if (event.code === 'Digit1') setTrackMode(1);
-    if (event.code === 'Digit2') setTrackMode(2);
+     if (event.code === 'Digit2') setTrackMode(2);
+     if (event.code === 'Digit3') setTrackMode(3);
     if (event.code === 'KeyB') toggleTraffic();
     if (event.code === 'KeyL') toggleHeadlights();
   }
@@ -2181,12 +2485,6 @@ document.querySelector('#sound-button').addEventListener('click', () => {
 });
 document.querySelector('#pause-button').addEventListener('click', () => togglePause());
 document.querySelector('#headlights-button').addEventListener('click', toggleHeadlights);
-document.querySelector('#quality-button').addEventListener('click', () => {
-  renderQuality = qualityModes[(qualityModes.indexOf(renderQuality) + 1) % qualityModes.length];
-  adaptiveResolution.scale = 1;
-  applyRenderQuality();
-  showToastMessage(`RENDER QUALITY / ${renderQuality.toUpperCase()}`);
-});
 document.querySelector('#camera-button').addEventListener('click', () => cycleCamera());
 document.querySelector('#camera-lock-button').addEventListener('click', () => toggleCameraLock());
 document.querySelector('#camera-select').addEventListener('change', (event) => setCameraAngle(event.target.value));
@@ -2225,15 +2523,15 @@ window.addEventListener('resize', () => {
   sideCamera.bottom = -42;
   sideCamera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
-  applyRenderQuality();
+  renderer.setPixelRatio(nativePixelRatio(window.devicePixelRatio));
 });
 
 applyTheme('night', false);
-applyRenderQuality();
 const requestedTrack = new URLSearchParams(window.location.search).get('track');
 if (requestedTrack === '2') setTrackMode(2);
+if (requestedTrack === '3') setTrackMode(3);
 else resetRun(false);
-showToastMessage('PRESS H FOR CONTROLS / W TO IGNITE');
+showToastMessage('ARROWS TO DRIVE / WASD FOR THRUST / H FOR CONTROLS');
 
 let hudElapsed = 0;
 let frameElapsed = 0;
@@ -2245,13 +2543,13 @@ function animate() {
   // entire GPU at 144/240 Hz. Physics retains its 120 Hz substeps.
   frameElapsed += frameDt;
   if (frameElapsed < 1 / 60 - 0.001) return;
-  if (renderQuality === 'auto' && adaptiveResolution.sample(frameElapsed)) applyRenderQuality();
   const dt = Math.min(frameElapsed, 0.04);
   frameElapsed = 0;
   if (!paused && !helpOpen) {
     updatePhysics(dt);
     updateTraffic(dt);
   }
+  if (activeTrack === 3) updateTrackThreeRoad();
   updateEffects(dt);
   updateCamera(dt);
   streetLighting.update(activeTrack, physics.position, theme === 'day');
@@ -2259,6 +2557,7 @@ function animate() {
   hudElapsed += dt;
   if (hudElapsed >= 0.1) { updateHUD(hudElapsed); hudElapsed = 0; }
   const renderCamera = activeTrack === 2 && cameraAngle === 'stunt-side' ? sideCamera : camera;
+  airReleasePools.forEach((pool) => pool.prepare(renderCamera));
   renderer.render(scene, renderCamera);
 }
 

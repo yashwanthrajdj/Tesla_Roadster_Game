@@ -10,7 +10,8 @@
     "preview": "vite preview --host 0.0.0.0",
     "test": "node --check src/main.js && node --test tests/*.test.mjs && npm run build",
     "test:browser": "PLAYWRIGHT_BROWSERS_PATH=./node_modules/.cache/ms-playwright node scripts/browser-check.mjs verified",
-    "assets:optimize": "gltfpack -i public/models/tesla-roadster-2020.glb -o public/models/tesla-roadster-2020-driving.glb -si 0.16 -se 0.003 -km -noq -v"
+    "assets:optimize": "gltfpack -i public/models/tesla-roadster-2020.glb -o public/models/tesla-roadster-2020-driving.glb -si 0.16 -se 0.003 -km -noq -v",
+    "assets:smoke": "node scripts/generate-smoke-atlas.mjs"
   },
   "dependencies": {
     "three": "^0.180.0"

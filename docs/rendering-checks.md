@@ -28,10 +28,10 @@ are red. Tests compare original and optimized lamp bounds within 6 cm.
 unchanged. The derivative has **118,721 instanced triangles / 28 draws**. Image
 textures are retained; this is not a claim that every asset has a mobile LOD.
 
-## Measurements
+## Measurements from the lighting optimization
 
 Environment: Linux container, Node 22.23.3, Playwright Chromium 156,
-SwiftShader software rendering, 960 × 600 viewport, DPR 1, Balanced quality,
+SwiftShader software rendering, 960 × 600 viewport, DPR 1, the former Balanced setting,
 Roadster 2020, stationary highway, night, warm shaders. Each measured sample is
 the median of five animation frame intervals; three samples after one warmup.
 
@@ -44,21 +44,52 @@ the median of five animation frame intervals; three samples after one warmup.
 These are software-renderer measurements on a shared host, not laptop/mobile
 FPS promises. The structural reductions are the reliable result: 9 fixed
 lights, 28 car draws, no scene transmission pass, no real-time shadow maps,
-bounded smoke pools and a resolution/pixel budget. Auto quality lowers resolution
-under sustained load; Low reduces particle emission too. Contact physics is not
-weakened to increase FPS.
+bounded smoke pools and instanced scenery. Contact physics is not weakened to
+increase FPS.
+
+## Current high-clarity smoke/input revision
+
+- Removed all rendering presets and adaptive downscaling. The canvas uses native
+  device pixel density and antialiasing, including after resize. Browser tests
+  verify a DPR-2 mobile canvas is 780 pixels wide for a 390 CSS-pixel viewport.
+- Replaced the round point sprites and cone cores with instanced, camera-facing
+  cloud quads. A locally baked 768×192 atlas contains four shaded, turbulent
+  density clouds. The GPU samples that texture, not a live volumetric raymarch.
+  Exhaust-age interpolation fills gaps in the stream; ground contact produces
+  spreading clouds. Depth testing, ground-edge fading and back-to-front packing
+  keep the smoke attached to the world rather than painted over the car.
+- Pools remain bounded at 180 rear + 360 lift + 72 RCS clouds (three batches).
+- Arrow keys now drive/steer. W fires rear jets, S/Space lifts, A/D operate yaw
+  jets. Touch controls use the same mapping.
+- Q/E now finish upright. From an inverted ramp exit, a full roll plus a 180°
+  recovery is necessary; another 360° alone would leave the car inverted again.
+  Pitch is leveled, heading preserved, and leftover spin velocity removed.
+
+Current stationary native-DPR/antialias browser sample: **9 lights, 83 draw calls,
+126,413 rendered triangles**; software frame medians **402.7 / 411.9 / 400.3 ms**.
+Antialiasing differs from the historical samples above, so these are not an
+apples-to-apples FPS comparison. Full native clarity deliberately replaces the
+old downscaling policy. Hardware GPU performance still needs device testing;
+there is no claim of zero lag on every device.
 
 ## Reproduce
 
-1. `npm ci`, then `npm test` (or `make test`). Five offline tests cover actual
+1. `npm ci`, then `npm test` (or `make test`). Ten offline tests cover actual
    model lamp positions/toggle/braking, instancing transforms, road-light coverage
-   down to z=-4890, resolution adaptation, and smoke upload/motion/lifetime/bounds.
+   down to z=-4890, native pixel density, textured cloud generation and smoke
+   upload/motion/lifetime/bounds, swapped controls, and Q/E upright recovery from
+   upright/inverted/pitched attitudes at different simulation step sizes.
 2. Install the browser as described in README, then `npm run test:browser`.
    It checks default model, actual L-key/button toggle, distant lamp relocation,
-   Space takeoff, active lift smoke, landing, track switch, quality and touch UI.
+   Arrow driving versus W thrust, Space/S takeoff, active cloud smoke, landing,
+   both actual inverted-ramp Q/E recoveries and wheels-down landings, no quality
+   selector, native DPR after resize, and touch UI.
 3. Inspect `artifacts/verified-road.png`, `artifacts/headlights-off.png`,
    `artifacts/lift-smoke.png`, `artifacts/lift-smoke-side.png`,
-   `artifacts/stunt-lighting.png`, and `artifacts/mobile-controls.png`.
+   `artifacts/rear-smoke.png`, `artifacts/ramp-q-recovery.png`,
+   `artifacts/ramp-e-recovery.png`, `artifacts/stunt-lighting.png`, and
+   `artifacts/mobile-controls.png`, plus `artifacts/settings-page.png` for the
+   sensitivity/toggle dashboard.
 
 Remaining validation: real laptop/mobile GPUs, touch-device frame rates, and
 Docker build/run on a machine with Docker available. The Vite chunk-size warning
