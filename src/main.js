@@ -1542,17 +1542,36 @@ function getTrackTwoTerrain(x, z) {
 }
 
 function getTrackThreeTerrain(x, z) {
-  const { startZ, radius, width, surfaceY, approachLength } = TRACK_THREE_RAMP;
+  const { startZ, radius, width, surfaceY, approachLength, endAngle } = TRACK_THREE_RAMP;
   const rampEndZ = startZ - radius;
-  const insideRampWidth = Math.abs(x) <= width / 2;
+  const insideRampWidth = Math.abs(x) <= width / 2 + RAMP_EDGE_MARGIN;
   const insideApproachWidth = Math.abs(x) <= 9;
+
+  // Once attached to the ramp curve, evaluate strictly along the stored arc angle theta.
+  // This prevents normal offset components from dragging theta backward in the upper half.
+  if (insideRampWidth && physics.wheelContact && physics.rampTheta > 0.01 && physics.rampTheta < endAngle - 0.02) {
+    const theta = physics.rampTheta;
+    const height = surfaceY + radius * (1 - Math.cos(theta)) + 0.04;
+    const normal = tmp.surfaceNormal.set(0, Math.cos(theta), Math.sin(theta)).normalize();
+    const tangent = tmp.surfaceTangent.set(0, Math.sin(theta), -Math.cos(theta)).normalize();
+    return {
+      hasSurface: true,
+      height,
+      normal,
+      tangent,
+      name: 'VERTICAL LAUNCH RAMP',
+      type: 'jump-ramp',
+      theta,
+      surfaceZ: startZ - radius * Math.sin(theta),
+    };
+  }
 
   // On the approach slab
   if (insideApproachWidth && z <= startZ + approachLength && z > startZ) {
     return flatTerrain(0.04, 'RAMP APPROACH');
   }
 
-  // On the curved vertical launch ramp
+  // On the curved vertical launch ramp entrance / initial contact
   if (insideRampWidth && z <= startZ && z >= rampEndZ) {
     const ratio = THREE.MathUtils.clamp((startZ - z) / radius, 0, 1);
     const theta = Math.asin(ratio);
@@ -1567,7 +1586,7 @@ function getTrackThreeTerrain(x, z) {
       name: theta > 0.08 ? 'VERTICAL LAUNCH RAMP' : 'RAMP APPROACH',
       type: 'jump-ramp',
       theta,
-      surfaceZ: z,
+      surfaceZ: startZ - radius * Math.sin(theta),
     };
   }
 
@@ -1658,7 +1677,7 @@ function alignVehicleToSurface(normal, dt, hardLanding = false, tangent = null) 
   const basis = new THREE.Matrix4().makeBasis(xAxis, surfaceUp, zAxis);
   tmp.desiredQuaternion.setFromRotationMatrix(basis);
   const speed = physics.velocity.length();
-  const rate = hardLanding ? 32 : (speed < 3.0 ? 22 : 12);
+  const rate = hardLanding ? 48 : (speed < 3.0 ? 22 : 12);
   physics.quaternion.slerp(tmp.desiredQuaternion, Math.min(1, dt * rate));
 }
 
@@ -1803,7 +1822,11 @@ function updatePhysicsStep(dt) {
   if (physics.wheelContact && terrain.hasSurface && input.drive !== 0) {
     const groundVelocity = physics.velocity.dot(driveDirection);
     const targetSpeed = input.drive > 0 ? ((input.boost ? 300 : 220) * settings.speedControl) / 3.6 : (-65 * settings.speedControl) / 3.6;
-    const desiredAcceleration = THREE.MathUtils.clamp((targetSpeed - groundVelocity) * 4.2, -48, 42);
+    let desiredAcceleration = THREE.MathUtils.clamp((targetSpeed - groundVelocity) * 4.2, -48, 42);
+    // On steep stunt ramps, assist climbing so the vehicle accelerates smoothly past the middle
+    if ((terrain.type === 'jump-ramp' || terrain.type === 'ramp') && input.drive > 0) {
+      desiredAcceleration += 9.81 * Math.sin(terrain.theta ?? 0.5) * 1.5;
+    }
     applyForce(driveDirection.clone().multiplyScalar(physics.mass * desiredAcceleration), ZERO, dt);
   }
 
@@ -1896,9 +1919,7 @@ function updatePhysicsStep(dt) {
   const wasWheelContact = physics.wheelContact;
   const surfaceIsReachable = contactTerrain.type === 'ramp' || contactTerrain.type === 'jump-ramp'
     ? surfaceDistance >= -RAMP_CONTACT_MARGIN
-    : contactTerrain.type === 'ground'
-      ? surfaceDistance >= -GROUND_LOCK_DISTANCE
-      : surfaceDistance >= -MAX_SURFACE_PENETRATION;
+    : surfaceDistance >= -MAX_SURFACE_PENETRATION;
   // The deck query is already height-gated, so an upward-moving car may
   // legitimately contact it at the end of the return arc. Rejecting positive
   // vertical velocity here made the car strike and fall through the landing.
@@ -1919,29 +1940,33 @@ function updatePhysicsStep(dt) {
   // downward step that moves from above the support plane to just below it.
   const groundCrossing = contactTerrain.type === 'ground'
     && !wasWheelContact
-    && previousSurfaceDistance > contactSupport
-    && surfaceDistance <= contactSupport + GROUND_LANDING_MARGIN
+    && (previousSurfaceDistance > contactSupport || surfaceDistance <= contactSupport + 0.25)
     && physics.velocity.dot(contactTerrain.normal) <= 0;
   const groundLanding = contactTerrain.type === 'ground'
     && !wasWheelContact
-    && surfaceDistance <= contactSupport + GROUND_LANDING_MARGIN
-    && (groundCrossing || physics.velocity.dot(contactTerrain.normal) <= 0);
-  const canStickToSurface = contactTerrain.hasSurface && surfaceIsReachable && (
+    && (groundCrossing || (surfaceDistance <= contactSupport + GROUND_LANDING_MARGIN && physics.velocity.dot(contactTerrain.normal) <= 0));
+  // If the car has launched from the jump ramp into the air, do not re-grab it at the lip
+  const airborneFromJump = contactTerrain.type === 'jump-ramp' && !wasWheelContact && (physics.velocity.y > 0 || physics.position.y > 6);
+
+  const canStickToSurface = !airborneFromJump && contactTerrain.hasSurface && surfaceIsReachable && (
     rampRecovery
     || groundRecovery
     || groundLanding
     || (contactTerrain.type !== 'ground' && surfaceDistance <= contactSupport + GROUND_LANDING_MARGIN)
+    || (contactTerrain.type === 'ground' && surfaceDistance <= contactSupport + 0.15)
   );
 
   if (canStickToSurface) {
     const impactSpeed = Math.max(0, -physics.velocity.dot(contactTerrain.normal));
+    let releaseFromLip = false;
 
     if (contactTerrain.type === 'ramp' || contactTerrain.type === 'jump-ramp') {
       const rampDef = contactTerrain.type === 'jump-ramp' ? TRACK_THREE_RAMP : STUNT_RAMP;
-      // Advance along the ramp's arc length rather than deriving both halves
-      // from z. At the apex z stops changing for a moment; a stored theta
-      // lets the car continue smoothly onto the inverted return side.
-      physics.rampTheta = contactTerrain.theta;
+      // Advance along the ramp's arc length rather than deriving from z.
+      // Only initialize theta from terrain if entering the ramp for the first time.
+      if (!wasWheelContact || physics.rampTheta <= 0.01) {
+        physics.rampTheta = contactTerrain.theta;
+      }
       if (input.lift === 0) {
         physics.rampTheta = THREE.MathUtils.clamp(
           physics.rampTheta + physics.velocity.dot(contactTerrain.tangent) * dt / rampDef.radius,
@@ -1949,60 +1974,92 @@ function updatePhysicsStep(dt) {
           rampDef.endAngle,
         );
       }
-      const theta = physics.rampTheta;
-      contactTerrain.height = rampDef.surfaceY + rampDef.radius * (1 - Math.cos(theta)) + (contactTerrain.type === 'jump-ramp' ? 0.04 : 0);
-      contactTerrain.normal.set(0, Math.cos(theta), Math.sin(theta)).normalize();
-      contactTerrain.tangent.set(0, Math.sin(theta), -Math.cos(theta)).normalize();
-      contactTerrain.surfaceZ = rampDef.startZ - rampDef.radius * Math.sin(theta);
-      if (contactTerrain.type === 'ramp') {
-        contactTerrain.arc = theta >= Math.PI * 0.5 ? 'upper' : 'lower';
+
+      // Track 3 vertical launch ramp lip release: transition from ramp ride to ballistic launch
+      if (contactTerrain.type === 'jump-ramp' && physics.rampTheta >= rampDef.endAngle - 0.05) {
+        releaseFromLip = true;
+        physics.wheelContact = false;
+        physics.rampTheta = 0;
+        const speedAtLip = physics.velocity.length();
+        physics.velocity.y = Math.min(Math.max(physics.velocity.y, speedAtLip * 0.65), 38);
+        physics.velocity.z = -Math.max(Math.abs(physics.velocity.z), speedAtLip * 0.75, 28);
+        showToastMessage('LAUNCH! AIRBORNE STUNT JUMP');
+      } else {
+        const theta = physics.rampTheta;
+        contactTerrain.height = rampDef.surfaceY + rampDef.radius * (1 - Math.cos(theta)) + (contactTerrain.type === 'jump-ramp' ? 0.04 : 0);
+        contactTerrain.normal.set(0, Math.cos(theta), Math.sin(theta)).normalize();
+        contactTerrain.tangent.set(0, Math.sin(theta), -Math.cos(theta)).normalize();
+        contactTerrain.surfaceZ = rampDef.startZ - rampDef.radius * Math.sin(theta);
+        if (contactTerrain.type === 'ramp') {
+          contactTerrain.arc = theta >= Math.PI * 0.5 ? 'upper' : 'lower';
+        }
+        surfacePoint.set(physics.position.x, contactTerrain.height, contactTerrain.surfaceZ);
+        contactSupport = getVehicleSupportOffset(contactTerrain.normal);
+        surfaceDistance = physics.position.clone().sub(surfacePoint).dot(contactTerrain.normal);
       }
-      surfacePoint.set(physics.position.x, contactTerrain.height, contactTerrain.surfaceZ);
+    }
+
+    if (!releaseFromLip) {
+      // Align first, then calculate the support distance again. The old order
+      // snapped using the pre-landing orientation and then rotated the chassis,
+      // which is why the model could finish inside the road after touchdown.
+      const surfaceTangent = contactTerrain.type === 'ground' ? null : contactTerrain.tangent;
+      alignVehicleToSurface(contactTerrain.normal, dt, !wasWheelContact && impactSpeed > 5, surfaceTangent);
       contactSupport = getVehicleSupportOffset(contactTerrain.normal);
-      surfaceDistance = physics.position.clone().sub(surfacePoint).dot(contactTerrain.normal);
+      // Resolve to the exact support distance every contact step. This prevents
+      // a fast landing from leaving the body half inside the road or hovering
+      // above the ramp after the orientation correction.
+      physics.position.copy(surfacePoint).addScaledVector(contactTerrain.normal, contactSupport + 0.005);
+
+      // Remove only the velocity component directed into the surface. The
+      // return deck is inverted, so it also needs a small two-sided contact
+      // constraint; otherwise gravity immediately pulls the car away from its
+      // underside after it rotates into the inverted pose.
+      const normalVel = physics.velocity.dot(contactTerrain.normal);
+      if (contactTerrain.type === 'deck' || contactTerrain.type === 'ramp' || contactTerrain.type === 'jump-ramp' || normalVel < 0 || physics.landingAssist > 0) {
+        physics.velocity.addScaledVector(contactTerrain.normal, -normalVel);
+      }
+
+      // Apply impact damping ONLY on initial touchdown from air!
+      if (!wasWheelContact && impactSpeed > 5.0) {
+        const dampFactor = impactSpeed > 20 ? 0.85 : THREE.MathUtils.lerp(0.98, 0.90, (impactSpeed - 5.0) / 15);
+        // Dampen the impact without throwing away the forward velocity that
+        // carries the car along the landing surface.
+        physics.velocity.multiplyScalar(dampFactor);
+        cameraShake = Math.min(1.0, impactSpeed / 20);
+        showToastMessage(`LANDING LOAD ${impactSpeed.toFixed(1)} M/S`);
+        physics.landed = true;
+        physics.landingAssist = 0.28;
+      }
+
+      physics.wheelContact = true;
+      if (physics.spinActive) stopSingleSpin();
+      physics.landingAssist = Math.max(0, physics.landingAssist - dt);
+      physics.angularVelocity.multiplyScalar(Math.exp(-(physics.landingAssist > 0 ? 28 : 12) * dt));
+    } else {
+      physics.wheelContact = false;
+      physics.landed = false;
+      physics.landingAssist = Math.max(0, physics.landingAssist - dt);
+      physics.angularVelocity.multiplyScalar(Math.exp(-1.45 * dt));
     }
-
-    // Align first, then calculate the support distance again. The old order
-    // snapped using the pre-landing orientation and then rotated the chassis,
-    // which is why the model could finish inside the road after touchdown.
-    const surfaceTangent = contactTerrain.type === 'ground' ? null : contactTerrain.tangent;
-    alignVehicleToSurface(contactTerrain.normal, dt, !wasWheelContact && impactSpeed > 5, surfaceTangent);
-    contactSupport = getVehicleSupportOffset(contactTerrain.normal);
-    // Resolve to the exact support distance every contact step. This prevents
-    // a fast landing from leaving the body half inside the road or hovering
-    // above the ramp after the orientation correction.
-    physics.position.copy(surfacePoint).addScaledVector(contactTerrain.normal, contactSupport + 0.005);
-
-    // Remove only the velocity component directed into the surface. The
-    // return deck is inverted, so it also needs a small two-sided contact
-    // constraint; otherwise gravity immediately pulls the car away from its
-    // underside after it rotates into the inverted pose.
-    const normalVel = physics.velocity.dot(contactTerrain.normal);
-    if (contactTerrain.type === 'deck' || normalVel < 0 || physics.landingAssist > 0) {
-      physics.velocity.addScaledVector(contactTerrain.normal, -normalVel);
-    }
-
-    // Apply impact damping ONLY on initial touchdown from air!
-    if (!wasWheelContact && impactSpeed > 5.0) {
-      const dampFactor = impactSpeed > 20 ? 0.85 : THREE.MathUtils.lerp(0.98, 0.90, (impactSpeed - 5.0) / 15);
-      // Dampen the impact without throwing away the forward velocity that
-      // carries the car along the landing surface.
-      physics.velocity.multiplyScalar(dampFactor);
-      cameraShake = Math.min(1.0, impactSpeed / 20);
-      showToastMessage(`LANDING LOAD ${impactSpeed.toFixed(1)} M/S`);
-      physics.landed = true;
-      physics.landingAssist = 0.24;
-    }
-
-    physics.wheelContact = true;
-    if (physics.spinActive) stopSingleSpin();
-    physics.landingAssist = Math.max(0, physics.landingAssist - dt);
-    physics.angularVelocity.multiplyScalar(Math.exp(-(physics.landingAssist > 0 ? 28 : 12) * dt));
   } else {
     physics.wheelContact = false;
     physics.landed = false;
     physics.landingAssist = Math.max(0, physics.landingAssist - dt);
     physics.angularVelocity.multiplyScalar(Math.exp(-1.45 * dt));
+  }
+
+  // Bulletproof impenetrable ground barrier: vehicle chassis can NEVER sink or fall below the road surface
+  if (contactTerrain.type === 'ground') {
+    const minSupport = getVehicleSupportOffset(contactTerrain.normal);
+    const minRoadY = contactTerrain.height + minSupport;
+    if (physics.position.y < minRoadY) {
+      physics.position.y = minRoadY + 0.005;
+      if (physics.velocity.y < 0) physics.velocity.y = 0;
+      alignVehicleToSurface(contactTerrain.normal, dt, true);
+      physics.wheelContact = true;
+      physics.landed = true;
+    }
   }
   if (physics.angularVelocity.lengthSq() > 38) physics.angularVelocity.setLength(6.15);
 
