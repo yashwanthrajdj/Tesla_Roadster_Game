@@ -8,12 +8,17 @@ test('settings normalize and clamp custom sensitivity values', () => {
   assert.equal(settings.speedControl, 0.5);
   assert.equal(settings.gyroSensitivity, 1.35);
   assert.equal(settings.autoThrust, true);
+  assert.equal(settings.vegetationEnabled, true);
+  assert.equal(settings.bushesEnabled, true);
+  assert.equal(settings.treesEnabled, true);
+  assert.equal(settings.vegetationDensity, 1);
   assert.equal(settings.stuntVehicleCount, 3);
   assert.equal(settings.stuntVehicleSpacing, 4);
   assert.equal(settings.stabilizeInAir, DEFAULT_SETTINGS.stabilizeInAir);
   assert.equal(formatSettingValue('speedControl', 1.25), '125% max speed');
   assert.equal(formatSettingValue('stuntVehicleCount', 5), '5 VEHICLES');
   assert.equal(formatSettingValue('stuntVehicleSpacing', 2.25), '2.25M GAP');
+  assert.equal(formatSettingValue('vegetationDensity', 1.5), '150% COVERAGE');
 });
 
 test('settings persist through a storage round trip', () => {

@@ -9,6 +9,7 @@ import { readControls } from './controls.js';
 import { createSpinPlan, sampleSpin } from './air-spin.js';
 import { DEFAULT_SETTINGS, SETTING_RANGES, formatSettingValue, loadSettings, saveSettings } from './settings.js';
 import { STUNT_VEHICLE_ASSETS, getStuntVehicleLayout, getStuntVehicleRotation } from './stunt-vehicles.js';
+import { createTrackOneVegetation } from './vegetation.js';
 import './style.css';
 
 const CAR_OPTIONS = {
@@ -40,6 +41,15 @@ const STUNT_RAMP = Object.freeze({
 });
 const STUNT_JUMP_BOUNDS = Object.freeze({ halfWidth: 20, minZ: -100000, maxZ: 104 });
 const STUNT_JUMP_ROAD = Object.freeze({ sectionLength: 192, sectionCount: 7, roadWidth: 36, shoulderWidth: 4, targetZ: -108, parkingLaneX: -3 });
+const TRACK_THREE_RAMP = Object.freeze({
+  startZ: -45,
+  radius: 25,
+  width: 14,
+  endAngle: Math.PI * 0.5,
+  surfaceY: -0.04,
+  approachLength: 26,
+  modelUrl: '/models/Untitled.glb',
+});
 const MAX_SURFACE_PENETRATION = 3.2;
 const RAMP_CONTACT_MARGIN = 1.4;
 const RAMP_EDGE_MARGIN = 0.65;
@@ -193,6 +203,17 @@ document.querySelector('#app').innerHTML = `
            </div>
            <div class="stunt-asset-strip"><span>LOADED TARGETS</span><b id="stunt-asset-status">STREAMING 0 / 5</b></div>
          </section>
+         <section class="vegetation-settings-card" aria-labelledby="vegetation-settings-title">
+           <p class="eyebrow">ROAD 01 / NATURAL SCENERY</p>
+           <h3 id="vegetation-settings-title">GREEN<br><em>SHIELD</em></h3>
+           <p>Keep the six-lane highway framed by layered 3D trees and colorful bushes. These controls change the scenery only; native display resolution stays untouched.</p>
+           <label class="setting-row"><span><b>VEGETATION DENSITY</b><output id="vegetation-density-value"></output></span><input id="vegetation-density" type="range" min="0.5" max="1.5" step="0.25"></label>
+           <div class="vegetation-toggles">
+             <label class="toggle-row"><span><b>GREEN SCENERY</b><small>Show all roadside vegetation on Track 01.</small></span><input id="vegetation-enabled" type="checkbox"><i></i></label>
+             <label class="toggle-row"><span><b>BUSHES</b><small>Low layered shrubs close to the road edge.</small></span><input id="bushes-enabled" type="checkbox"><i></i></label>
+             <label class="toggle-row"><span><b>TREES</b><small>Tall shaded trees behind the bushes.</small></span><input id="trees-enabled" type="checkbox"><i></i></label>
+           </div>
+         </section>
          <div class="settings-toggles">
           <label class="toggle-row"><span><b>STABILIZE IN AIR</b><small>Level pitch and roll when no spin is active.</small></span><input id="stabilize-in-air" type="checkbox"><i></i></label>
           <label class="toggle-row"><span><b>AUTO THRUST</b><small>Maintain forward pressure during airborne/ramp travel.</small></span><input id="auto-thrust" type="checkbox"><i></i></label>
@@ -291,6 +312,7 @@ let stuntVehicleTemplates = new Map();
 let stuntVehicleLoadCount = 0;
 let stuntFormationPlaceholders = [];
 let stuntRoadSections = [];
+let trackOneVegetation = null;
 const gyro = { beta: 0, gamma: 0, active: false };
 
 const physics = {
@@ -663,6 +685,46 @@ function createTrackThree() {
   label.scale.set(7.2, 1.7, 1);
   label.rotation.y = Math.PI / 2;
   trackThreeRoot.add(label);
+
+  const rampGroup = new THREE.Group();
+  rampGroup.name = 'track-three-ramp-group';
+  rampGroup.position.set(0, 0, TRACK_THREE_RAMP.startZ);
+  trackThreeRoot.add(rampGroup);
+
+  loader.load(
+    TRACK_THREE_RAMP.modelUrl,
+    (gltf) => {
+      const rampModel = gltf.scene;
+      rampModel.name = 'track-three-ramp-model';
+      rampModel.rotation.x = Math.PI / 2;
+      const toRemove = [];
+      rampModel.traverse((node) => {
+        if (node.isMesh) {
+          if (node.name.includes('Test-range_ground') || node.name.includes('Test-range ground')) {
+            toRemove.push(node);
+            return;
+          }
+          node.castShadow = true;
+          node.receiveShadow = true;
+          if (node.material) {
+            node.material.side = THREE.DoubleSide;
+            if (node.material.emissive && node.material.emissive.getHex() > 0) {
+              node.material.emissiveIntensity = 3.6;
+            }
+            if ('envMapIntensity' in node.material) {
+              node.material.envMapIntensity = 1.4;
+            }
+          }
+        }
+      });
+      toRemove.forEach((node) => node.parent?.remove(node));
+      rampGroup.add(rampModel);
+    },
+    undefined,
+    (err) => {
+      console.warn('Could not load Track 3 vertical ramp model:', err);
+    }
+  );
 }
 
 function updateTrackThreeRoad() {
@@ -1166,6 +1228,7 @@ createRoad();
 createTrackTwo();
 createTrackThree();
 createLightsAndScenery();
+trackOneVegetation = createTrackOneVegetation(trackOneRoot, settings);
 batchScenery(trackOneRoot);
 batchScenery(trackTwoRoot);
 streetLighting.buildPools(1, trackOneRoot);
@@ -1241,7 +1304,13 @@ function clearAirReleaseParticles() {
 
 function smokeGroundHeight(x, z) {
   if (activeTrack === 1) return z > 37 && z < 75 ? 0.06 : -0.04;
-  if (activeTrack === 3) return -0.04;
+  if (activeTrack === 3) {
+    if (Math.abs(x) <= TRACK_THREE_RAMP.width / 2 && z <= TRACK_THREE_RAMP.startZ && z >= TRACK_THREE_RAMP.startZ - TRACK_THREE_RAMP.radius) {
+      const ratio = THREE.MathUtils.clamp((TRACK_THREE_RAMP.startZ - z) / TRACK_THREE_RAMP.radius, 0, 1);
+      return TRACK_THREE_RAMP.surfaceY + TRACK_THREE_RAMP.radius * (1 - Math.cos(Math.asin(ratio)));
+    }
+    return -0.04;
+  }
   if (Math.abs(x) < 10 && z < STUNT_RAMP.startZ - 20 && z >= STUNT_BOUNDS.minZ) return STUNT_RAMP.surfaceY;
   return Math.abs(x) < 10 && z > STUNT_RAMP.startZ && z < 95 ? STUNT_RAMP.surfaceY : -0.04;
 }
@@ -1473,6 +1542,35 @@ function getTrackTwoTerrain(x, z) {
 }
 
 function getTrackThreeTerrain(x, z) {
+  const { startZ, radius, width, surfaceY, approachLength } = TRACK_THREE_RAMP;
+  const rampEndZ = startZ - radius;
+  const insideRampWidth = Math.abs(x) <= width / 2;
+  const insideApproachWidth = Math.abs(x) <= 9;
+
+  // On the approach slab
+  if (insideApproachWidth && z <= startZ + approachLength && z > startZ) {
+    return flatTerrain(0.04, 'RAMP APPROACH');
+  }
+
+  // On the curved vertical launch ramp
+  if (insideRampWidth && z <= startZ && z >= rampEndZ) {
+    const ratio = THREE.MathUtils.clamp((startZ - z) / radius, 0, 1);
+    const theta = Math.asin(ratio);
+    const height = surfaceY + radius * (1 - Math.cos(theta)) + 0.04;
+    const normal = tmp.surfaceNormal.set(0, Math.cos(theta), Math.sin(theta)).normalize();
+    const tangent = tmp.surfaceTangent.set(0, Math.sin(theta), -Math.cos(theta)).normalize();
+    return {
+      hasSurface: true,
+      height,
+      normal,
+      tangent,
+      name: theta > 0.08 ? 'VERTICAL LAUNCH RAMP' : 'RAMP APPROACH',
+      type: 'jump-ramp',
+      theta,
+      surfaceZ: z,
+    };
+  }
+
   if (Math.abs(x) <= STUNT_JUMP_BOUNDS.halfWidth && z >= STUNT_JUMP_BOUNDS.minZ && z <= STUNT_JUMP_BOUNDS.maxZ) {
     return flatTerrain(-0.04, 'SIX-LANE HIGHWAY');
   }
@@ -1838,24 +1936,27 @@ function updatePhysicsStep(dt) {
   if (canStickToSurface) {
     const impactSpeed = Math.max(0, -physics.velocity.dot(contactTerrain.normal));
 
-    if (contactTerrain.type === 'ramp') {
+    if (contactTerrain.type === 'ramp' || contactTerrain.type === 'jump-ramp') {
+      const rampDef = contactTerrain.type === 'jump-ramp' ? TRACK_THREE_RAMP : STUNT_RAMP;
       // Advance along the ramp's arc length rather than deriving both halves
       // from z. At the apex z stops changing for a moment; a stored theta
       // lets the car continue smoothly onto the inverted return side.
       physics.rampTheta = contactTerrain.theta;
       if (input.lift === 0) {
         physics.rampTheta = THREE.MathUtils.clamp(
-          physics.rampTheta + physics.velocity.dot(contactTerrain.tangent) * dt / STUNT_RAMP.radius,
+          physics.rampTheta + physics.velocity.dot(contactTerrain.tangent) * dt / rampDef.radius,
           0,
-          STUNT_RAMP.endAngle,
+          rampDef.endAngle,
         );
       }
       const theta = physics.rampTheta;
-      contactTerrain.height = STUNT_RAMP.surfaceY + STUNT_RAMP.radius * (1 - Math.cos(theta));
+      contactTerrain.height = rampDef.surfaceY + rampDef.radius * (1 - Math.cos(theta)) + (contactTerrain.type === 'jump-ramp' ? 0.04 : 0);
       contactTerrain.normal.set(0, Math.cos(theta), Math.sin(theta)).normalize();
       contactTerrain.tangent.set(0, Math.sin(theta), -Math.cos(theta)).normalize();
-      contactTerrain.surfaceZ = STUNT_RAMP.startZ - STUNT_RAMP.radius * Math.sin(theta);
-      contactTerrain.arc = theta >= Math.PI * 0.5 ? 'upper' : 'lower';
+      contactTerrain.surfaceZ = rampDef.startZ - rampDef.radius * Math.sin(theta);
+      if (contactTerrain.type === 'ramp') {
+        contactTerrain.arc = theta >= Math.PI * 0.5 ? 'upper' : 'lower';
+      }
       surfacePoint.set(physics.position.x, contactTerrain.height, contactTerrain.surfaceZ);
       contactSupport = getVehicleSupportOffset(contactTerrain.normal);
       surfaceDistance = physics.position.clone().sub(surfacePoint).dot(contactTerrain.normal);
@@ -2158,7 +2259,7 @@ function updateHUD(dt) {
   const mission = activeTrack === 2
     ? (physics.airborneTime > 0.1 ? (autoSpiral ? 'AUTO SPIRAL ACTIVE' : hudTerrain.name) : hudTerrain.name)
     : activeTrack === 3
-      ? (physics.airborneTime > 0.1 ? (autoSpiral ? 'AUTO SPIRAL ACTIVE' : 'PARKED LINE / AIRBORNE') : physics.position.z > STUNT_JUMP_ROAD.targetZ + 36 ? 'APPROACH PARKED VEHICLES' : 'PARKED VEHICLE LINE')
+      ? (physics.airborneTime > 0.1 ? (autoSpiral ? 'AUTO SPIRAL ACTIVE' : 'PARKED LINE / AIRBORNE') : hudTerrain.name !== 'SIX-LANE HIGHWAY' ? hudTerrain.name : physics.position.z > STUNT_JUMP_ROAD.targetZ + 36 ? 'APPROACH PARKED VEHICLES' : 'PARKED VEHICLE LINE')
       : (physics.launchPeak > 18 ? 'VECTOR UNLOCKED' : physics.airborneTime > 0.1 ? (autoSpiral ? 'AUTO SPIRAL ACTIVE' : 'AIRBORNE — STABILIZE') : physics.position.z < -50 ? 'APPROACH RAMP' : 'READY TO DRIVE');
   const progress = activeTrack === 2
     ? THREE.MathUtils.clamp((46 - physics.position.z) / 246 * 100, 0, 100)
@@ -2340,7 +2441,7 @@ function renderSettings() {
     output.value = formatSettingValue(key, settings[key]);
     output.textContent = formatSettingValue(key, settings[key]);
   });
-  ['stabilizeInAir', 'autoThrust', 'gyroEnabled'].forEach((key) => {
+  ['stabilizeInAir', 'autoThrust', 'gyroEnabled', 'vegetationEnabled', 'bushesEnabled', 'treesEnabled'].forEach((key) => {
     const element = document.querySelector(`#${key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`);
     if (element) element.checked = settings[key];
   });
@@ -2386,13 +2487,15 @@ Object.keys(SETTING_RANGES).forEach((key) => {
     settings = saveSettings(settings);
     renderSettings();
     if (key === 'stuntVehicleCount' || key === 'stuntVehicleSpacing') rebuildStuntFormation();
+    if (key === 'vegetationDensity') trackOneVegetation?.update(settings);
   });
 });
-['stabilizeInAir', 'autoThrust', 'gyroEnabled'].forEach((key) => {
+['stabilizeInAir', 'autoThrust', 'gyroEnabled', 'vegetationEnabled', 'bushesEnabled', 'treesEnabled'].forEach((key) => {
   document.querySelector(`#${settingId(key)}`)?.addEventListener('change', (event) => {
     settings[key] = event.target.checked;
     settings = saveSettings(settings);
     if (key === 'gyroEnabled' && settings.gyroEnabled && !gyroPermissionGranted) enableGyroscope();
+    if (key === 'vegetationEnabled' || key === 'bushesEnabled' || key === 'treesEnabled') trackOneVegetation?.update(settings);
   });
 });
 document.querySelector('#settings-button').addEventListener('click', () => toggleSettings());
@@ -2414,6 +2517,7 @@ document.querySelector('#reset-settings').addEventListener('click', () => {
   settings = saveSettings({ ...DEFAULT_SETTINGS });
   renderSettings();
   rebuildStuntFormation();
+  trackOneVegetation?.update(settings);
   showToastMessage('CONTROL SETTINGS RESET');
 });
 document.querySelector('#gyro-permission').addEventListener('click', enableGyroscope);

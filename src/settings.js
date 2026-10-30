@@ -8,6 +8,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
   gyroEnabled: false,
   stabilizeInAir: true,
   autoThrust: false,
+  vegetationEnabled: true,
+  bushesEnabled: true,
+  treesEnabled: true,
+  vegetationDensity: 1,
   stuntVehicleCount: 3,
   stuntVehicleSpacing: 4,
 });
@@ -19,6 +23,7 @@ export const SETTING_RANGES = Object.freeze({
   spinSensitivity: [0.5, 1.75, 0.05],
   spiralSensitivity: [0.25, 2, 0.05],
   gyroSensitivity: [0.25, 2, 0.05],
+  vegetationDensity: [0.5, 1.5, 0.25],
   stuntVehicleCount: [1, 5, 1],
   stuntVehicleSpacing: [1, 12, 0.5],
 });
@@ -54,5 +59,6 @@ export function formatSettingValue(key, value) {
   if (key === 'gyroSensitivity') return `${Number(value).toFixed(2)}× gyro`;
   if (key === 'stuntVehicleCount') return `${Math.round(Number(value))} VEHICLE${Number(value) === 1 ? '' : 'S'}`;
   if (key === 'stuntVehicleSpacing') return `${Number(value).toFixed(2)}M GAP`;
+  if (key === 'vegetationDensity') return `${Math.round(Number(value) * 100)}% COVERAGE`;
   return `${Number(value).toFixed(2)}×`;
 }

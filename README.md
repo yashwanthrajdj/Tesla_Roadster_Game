@@ -84,6 +84,9 @@ and auto-thrust states are mirrored as `STB` and `AT` buttons in the dashboard.
 Track 03 adds a Stunt Formation Control section to the same Settings page.
 It saves a target count from 1–5 and a target spacing value, then rebuilds the
 linear parked-vehicle line immediately while the six-lane track is paused.
+Track 01 also has a Natural Scenery section with independent Green Scenery,
+Bushes, Trees, and Vegetation Density controls. These change instanced scenery
+coverage without changing native display pixel density or adding a blurry quality mode.
 Gyroscope input uses device tilt for steering/yaw and pitch when permission is
 available; desktop browsers can still use every keyboard control without it.
 Q/E are one-shot actions, not held roll controls. Starting upright makes one
@@ -102,6 +105,7 @@ safely if there is insufficient height.
 - Thruster air automatically recharges when the controls are released, so the banks recover after a long run instead of staying permanently empty.
 - Finite compressed-air reserve, gravity, aerodynamic drag, surface-seeking suction energy, rigid-body angular control, ground/ramp contact, and temperature telemetry.
 - A flat four-lane highway on Road 01 with white/amber lane markings, a black night sky, and full-length roadside fixtures. Four reusable nearby street spotlights provide actual lighting; inexpensive distant light pools keep the road readable. The highway has no hidden ramp collision.
+- Road 01 now has layered, deterministic 3D roadside vegetation: multi-shade low bushes close to the shoulder and taller clustered trees behind them. Trunks and foliage use instanced meshes with separate natural green shades, preserving depth, lighting, and native render resolution.
 - Two actual headlight spotlights originate at the model's measured front lamp vertices. The named rear lens materials glow red and brighten while braking. Models without separate lamp metadata use bounding-box fallback positions. Night ambient fill keeps the road visible even with headlights off.
 - Road markings/poles are instanced in culled sections. Expensive glass transmission and real-time shadow passes are disabled; alpha-tinted windows preserve the glass appearance. Rendering is capped at 60 FPS, hidden tabs skip rendering, the HUD updates at 10 Hz, and physics retains 120 Hz contact substeps.
 - Rendering always uses native display pixel density with antialiasing. There is no quality selector, automatic resolution reduction, or low-resolution smoke pass.

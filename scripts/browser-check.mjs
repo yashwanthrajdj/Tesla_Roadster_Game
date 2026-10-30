@@ -25,7 +25,7 @@ try {
     await route.fulfill({ response, body: `${body}\nwindow.__gameTest = {
       scene, renderer, physics, input, settings, keys, vehicleRoot, effects, airReleasePools,
       vehicleLights, streetLighting,
-      trackThreeRoot, stuntFormationRoot, stuntRoadSections, rebuildStuntFormation, updateTrackThreeRoad,
+      trackThreeRoot, stuntFormationRoot, stuntRoadSections, rebuildStuntFormation, updateTrackThreeRoad, trackOneVegetation,
       resetRun, updatePhysics, updateEffects, updateCamera, setTrackMode,
       setCameraAngle, applyTheme, getVehicleSupportOffset, getTerrainInfo,
       ready: () => !!activeModel && !!smokeTexture.image?.width,
@@ -102,6 +102,29 @@ try {
     await page.locator('#close-settings-button').click();
     assert.equal(await page.locator('#quality-button').count(), 0);
     assert.equal(await page.evaluate(() => window.__gameTest.renderer.getPixelRatio()), 1);
+    const vegetation = await page.evaluate(() => {
+      const v = window.__gameTest.trackOneVegetation;
+      return { stats: v.getStats(), rootVisible: v.root.visible, bushesVisible: v.bushesRoot.visible, treesVisible: v.treesRoot.visible };
+    });
+    assert.ok(vegetation.stats.bushes > 300);
+    assert.ok(vegetation.stats.trees > 150);
+    assert.equal(vegetation.stats.bushLayers, 4);
+    assert.equal(vegetation.stats.treeLayers, 5);
+    assert.ok(vegetation.rootVisible && vegetation.bushesVisible && vegetation.treesVisible);
+    await page.locator('#settings-button').click();
+    await page.locator('#settings-overlay.open').waitFor();
+    await page.locator('#vegetation-density').fill('1.5');
+    await page.locator('#trees-enabled').uncheck();
+    assert.equal(await page.locator('#vegetation-density').inputValue(), '1.5');
+    assert.equal(await page.locator('#trees-enabled').isChecked(), false);
+    await page.locator('#close-settings-button').click();
+    await page.locator('#settings-overlay.open').waitFor({ state: 'hidden' });
+    assert.ok(await page.evaluate(() => !window.__gameTest.trackOneVegetation.treesRoot.visible));
+    await page.locator('#settings-button').click();
+    await page.locator('#settings-overlay.open').waitFor();
+    await page.locator('#reset-settings').click();
+    await page.locator('#close-settings-button').click();
+    await page.locator('#settings-overlay.open').waitFor({ state: 'hidden' });
     const anchors = await page.evaluate(() => window.__gameTest.vehicleLights.headlights.map((light) => ({
       position: light.position.toArray(), target: light.target.position.toArray(), intensity: light.intensity,
     })));

@@ -146,6 +146,14 @@ h1 em, h2 em { color: var(--cyan); font-style: normal; }
 .stunt-settings-grid { margin-top: 10px; }
 .stunt-asset-strip { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; color: var(--muted); font: 700 9px 'Barlow Condensed', sans-serif; letter-spacing: .12em; }
 .stunt-asset-strip b { color: var(--cyan); font-weight: 700; }
+.vegetation-settings-card { margin-top: 22px; padding: 18px 18px 15px; border: 1px solid rgba(111, 194, 93, .25); border-radius: 16px; background: linear-gradient(135deg, rgba(44, 112, 55, .16), rgba(226, 214, 185, .035)); }
+.vegetation-settings-card h3 { margin: 10px 0 7px; font: 700 29px/.82 'Barlow Condensed', sans-serif; letter-spacing: -.01em; }
+.vegetation-settings-card h3 em { color: #8fcf61; font-style: normal; }
+.vegetation-settings-card > p:not(.eyebrow) { margin: 0; max-width: 540px; color: var(--muted); font-size: 10px; line-height: 1.45; }
+.vegetation-toggles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 5px; }
+.vegetation-settings-card .toggle-row { min-height: 74px; border-color: rgba(111, 194, 93, .2); background: rgba(71, 130, 67, .06); }
+.vegetation-settings-card .toggle-row input:checked + i { background: #397c3f; }
+.vegetation-settings-card .toggle-row input:checked + i::after { background: #c5ed9f; }
 .setting-row { display: block; padding: 12px 0 10px; border-top: 1px solid rgba(226, 214, 185, .14); }
 .setting-row > span { display: flex; justify-content: space-between; align-items: center; gap: 10px; color: var(--muted); font: 700 10px 'Barlow Condensed', sans-serif; letter-spacing: .1em; }
 .setting-row output { color: var(--cyan); font-size: 10px; letter-spacing: .04em; }
@@ -230,7 +238,7 @@ h1 em, h2 em { color: var(--cyan); font-style: normal; }
   .camera-picker { top: 196px; }
   .toast { top: 240px; }
   .settings-panel { width: calc(100vw - 20px); max-height: calc(100vh - 20px); padding: 24px 16px 18px; }
-  .settings-panel h2 { font-size: 38px; }.settings-grid, .settings-toggles { grid-template-columns: 1fr; gap: 5px; }.settings-actions { grid-template-columns: 1fr 1fr; }.settings-actions .launch-button { grid-column: 1 / -1; }
+   .settings-panel h2 { font-size: 38px; }.settings-grid, .settings-toggles, .vegetation-toggles { grid-template-columns: 1fr; gap: 5px; }.settings-actions { grid-template-columns: 1fr 1fr; }.settings-actions .launch-button { grid-column: 1 / -1; }
 }
 @media (pointer: coarse) {
   .touch-controls { position: absolute; bottom: 94px; left: 12px; right: 12px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
