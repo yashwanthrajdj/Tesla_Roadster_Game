@@ -131,3 +131,46 @@ test('Flight landing onto road maintains support height and never sinks below ro
   assert.ok(physics.velocity.z < -20, 'Vehicle must preserve forward velocity after touchdown');
   assert.ok(landedFrame > 0, `Vehicle landed at frame ${landedFrame}`);
 });
+
+test('Space lift thrusters lift vehicle off ground into free flight', () => {
+  const roadHeight = -0.04;
+  const vehicleSupport = 0.35;
+  const minRoadY = roadHeight + vehicleSupport; // 0.31m
+  const dt = 1 / 120;
+  const liftForce = 33000;
+  const mass = 1450;
+
+  const physics = {
+    position: new THREE.Vector3(0, minRoadY + 0.005, 0),
+    velocity: new THREE.Vector3(0, 0, -20),
+    wheelContact: true,
+    air: 100,
+  };
+
+  const input = { lift: 1 };
+
+  for (let frame = 0; frame < 60; frame++) {
+    // Lift force applied
+    if (input.lift > 0 && physics.air > 0) {
+      physics.velocity.y += (liftForce / mass) * dt;
+    }
+    // Gravity
+    physics.velocity.y -= 9.81 * dt;
+    physics.position.addScaledVector(physics.velocity, dt);
+
+    // Ground recovery requires input.lift === 0, so with lift > 0, wheelContact becomes false
+    if (input.lift > 0 && physics.position.y > minRoadY + 0.01) {
+      physics.wheelContact = false;
+    }
+
+    if (physics.position.y < minRoadY && physics.velocity.y <= 0) {
+      physics.position.y = minRoadY + 0.005;
+      physics.velocity.y = 0;
+      physics.wheelContact = true;
+    }
+  }
+
+  assert.ok(physics.position.y > minRoadY + 0.5, `Vehicle must lift off ground, reached y=${physics.position.y}`);
+  assert.strictEqual(physics.wheelContact, false, 'Vehicle must be airborne while thrusting upward');
+  assert.ok(physics.velocity.y > 0, 'Vehicle must maintain positive upward velocity while thrusting');
+});

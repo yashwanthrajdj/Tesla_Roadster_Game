@@ -1940,11 +1940,13 @@ function updatePhysicsStep(dt) {
   // downward step that moves from above the support plane to just below it.
   const groundCrossing = contactTerrain.type === 'ground'
     && !wasWheelContact
-    && (previousSurfaceDistance > contactSupport || surfaceDistance <= contactSupport + 0.25)
+    && previousSurfaceDistance > contactSupport
+    && surfaceDistance <= contactSupport + GROUND_LANDING_MARGIN
     && physics.velocity.dot(contactTerrain.normal) <= 0;
   const groundLanding = contactTerrain.type === 'ground'
     && !wasWheelContact
-    && (groundCrossing || (surfaceDistance <= contactSupport + GROUND_LANDING_MARGIN && physics.velocity.dot(contactTerrain.normal) <= 0));
+    && surfaceDistance <= contactSupport + GROUND_LANDING_MARGIN
+    && (groundCrossing || physics.velocity.dot(contactTerrain.normal) <= 0);
   // If the car has launched from the jump ramp into the air, do not re-grab it at the lip
   const airborneFromJump = contactTerrain.type === 'jump-ramp' && !wasWheelContact && (physics.velocity.y > 0 || physics.position.y > 6);
 
@@ -1953,7 +1955,6 @@ function updatePhysicsStep(dt) {
     || groundRecovery
     || groundLanding
     || (contactTerrain.type !== 'ground' && surfaceDistance <= contactSupport + GROUND_LANDING_MARGIN)
-    || (contactTerrain.type === 'ground' && surfaceDistance <= contactSupport + 0.15)
   );
 
   if (canStickToSurface) {
@@ -2049,13 +2050,13 @@ function updatePhysicsStep(dt) {
     physics.angularVelocity.multiplyScalar(Math.exp(-1.45 * dt));
   }
 
-  // Bulletproof impenetrable ground barrier: vehicle chassis can NEVER sink or fall below the road surface
+  // Impenetrable ground barrier: vehicle chassis can NEVER sink or fall below the road surface
   if (contactTerrain.type === 'ground') {
     const minSupport = getVehicleSupportOffset(contactTerrain.normal);
     const minRoadY = contactTerrain.height + minSupport;
-    if (physics.position.y < minRoadY) {
+    if (physics.position.y < minRoadY && physics.velocity.y <= 0) {
       physics.position.y = minRoadY + 0.005;
-      if (physics.velocity.y < 0) physics.velocity.y = 0;
+      physics.velocity.y = 0;
       alignVehicleToSurface(contactTerrain.normal, dt, true);
       physics.wheelContact = true;
       physics.landed = true;
